@@ -15,9 +15,67 @@ include(CTest)
 
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime C++ distribution")
 set(MAIW_CARDIAC_MRI_PACKAGE_DIR "" CACHE PATH "External cardiac MRI deployment package root")
+set(MAIW_QTVIEWERPRO_SOURCE_DIR "" CACHE PATH "Local qt-viewer-pro source directory")
+option(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION "Enable local qt-viewer-pro core/IO source integration" OFF)
 
 if(NOT ONNXRUNTIME_ROOT)
     message(FATAL_ERROR "ONNXRUNTIME_ROOT must point to an ONNX Runtime C++ distribution")
+endif()
+
+if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+    if(CMAKE_VERSION VERSION_LESS 3.28)
+        message(FATAL_ERROR "MAIW_ENABLE_QTVIEWERPRO_INTEGRATION is a temporary development-only source integration that requires CMake 3.28 or newer. The upstream qt-viewer-pro build registers tests unconditionally and does not yet provide install/export packaging, so the workstation must use CMake 3.28 set_tests_properties(DIRECTORY) support to disable those upstream tests cleanly.")
+    endif()
+    if(NOT MAIW_QTVIEWERPRO_SOURCE_DIR)
+        message(FATAL_ERROR "MAIW_QTVIEWERPRO_SOURCE_DIR must point to the qt-viewer-pro source tree when MAIW_ENABLE_QTVIEWERPRO_INTEGRATION is ON")
+    endif()
+    if(NOT EXISTS "${MAIW_QTVIEWERPRO_SOURCE_DIR}/CMakeLists.txt"
+       OR NOT EXISTS "${MAIW_QTVIEWERPRO_SOURCE_DIR}/include/qtviewerpro/core/VolumeData.h"
+       OR NOT EXISTS "${MAIW_QTVIEWERPRO_SOURCE_DIR}/include/qtviewerpro/io/MedicalVolumeLoaderRegistry.h")
+        message(FATAL_ERROR "MAIW_QTVIEWERPRO_SOURCE_DIR must point to a plausible qt-viewer-pro source tree with CMakeLists.txt and public core/IO headers")
+    endif()
+
+    find_package(Qt6 REQUIRED COMPONENTS Core)
+
+    add_subdirectory(
+        "${MAIW_QTVIEWERPRO_SOURCE_DIR}"
+        "${CMAKE_BINARY_DIR}/qt-viewer-pro-build"
+        EXCLUDE_FROM_ALL
+    )
+
+    add_library(maiw-medical-image INTERFACE)
+    target_link_libraries(maiw-medical-image
+        INTERFACE
+            qt-viewer-pro-core
+            qt-viewer-pro-io
+            Qt6::Core
+    )
+
+    if(BUILD_TESTING)
+        set(MAIW_QTVIEWERPRO_UPSTREAM_TESTS
+            test-volume-data
+            test-volume-metadata
+            test-anatomical-orientation
+            test-volume-physical-coordinate-mapper
+            test-volume-information
+            test-volume-transfer-function
+            test-slice-data
+            test-slice-extractor
+            test-mpr-coordinate-mapper
+            test-mpr-orientation-label-mapper
+            test-window-level-processor
+            test-volume-resampler
+            test-slice-image-converter
+            test-raw-volume-loader
+            test-nifti-volume-loader
+            test-metaimage-volume-loader
+            test-nrrd-volume-loader
+        )
+        set_tests_properties(${MAIW_QTVIEWERPRO_UPSTREAM_TESTS}
+            DIRECTORY "${CMAKE_BINARY_DIR}/qt-viewer-pro-build"
+            PROPERTIES DISABLED TRUE
+        )
+    endif()
 endif()
 
 find_path(
@@ -72,6 +130,31 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(BUILD_TESTING)
+    if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+        add_executable(test-qt-viewer-pro-dependency
+            tests/integration/TestQtViewerProDependency.cpp
+        )
+
+        target_link_libraries(test-qt-viewer-pro-dependency
+            PRIVATE
+                maiw-medical-image
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-qt-viewer-pro-dependency
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME qt-viewer-pro-dependency-smoke
+            COMMAND test-qt-viewer-pro-dependency
+        )
+    endif()
+
     if(NOT MAIW_CARDIAC_MRI_PACKAGE_DIR)
         message(STATUS "MAIW_CARDIAC_MRI_PACKAGE_DIR is not set; cardiac ONNX golden parity test disabled")
     else()
