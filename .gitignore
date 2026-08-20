@@ -1,0 +1,55 @@
+# CMake build directories
+build/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+
+# Ninja generated files
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# Compiled binaries and libraries
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+
+# Qt generated files
+*_autogen/
+*.user
+*.user.*
+
+# IDE state
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Runtime logs
+*.log
+
+# Raw or private medical data
+data/
+datasets/
+
+# Local generated model artifacts
+artifacts/
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
