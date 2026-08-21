@@ -50,6 +50,9 @@ struct CardiacMriPreprocessingConfig
 {
   VolumeSpacing targetSpacingXyz{1.5, 1.5, 7.5};
   TensorShapeDhw finalTensorShapeDhw{};
+  double lowerPercentile = 0.5;
+  double upperPercentile = 99.5;
+  double epsilon = 1e-6;
 };
 
 /**
@@ -86,6 +89,52 @@ struct CardiacMriXyzVolumePair
 {
   CardiacMriXyzVolume ed;
   CardiacMriXyzVolume es;
+};
+
+/**
+ * @brief Dense float32 XYZ cardiac MRI volume after joint intensity normalization.
+ *
+ * This type marks the exact pipeline point where Python converts normalized
+ * ED/ES arrays to np.float32. Spatial geometry remains unchanged.
+ */
+struct NormalizedCardiacMriXyzVolume
+{
+  VolumeDimensions dimensions;
+  VolumeSpacing spacing;
+  std::array<double, 3> origin{0.0, 0.0, 0.0};
+  std::array<double, 9> direction{1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0};
+  std::vector<float> voxels;
+};
+
+/**
+ * @brief ED/ES pair of normalized float32 cardiac MRI XYZ volumes.
+ */
+struct NormalizedCardiacMriXyzVolumePair
+{
+  NormalizedCardiacMriXyzVolume ed;
+  NormalizedCardiacMriXyzVolume es;
+};
+
+/**
+ * @brief Joint ED/ES normalization statistics from the valid pre-padding voxels.
+ */
+struct CardiacMriNormalizationMetadata
+{
+  double clipLower = 0.0;
+  double clipUpper = 0.0;
+  double mean = 0.0;
+  double std = 0.0;
+};
+
+/**
+ * @brief Normalized ED/ES volumes with their shared joint statistics.
+ */
+struct CardiacMriNormalizationResult
+{
+  NormalizedCardiacMriXyzVolumePair volumes;
+  CardiacMriNormalizationMetadata metadata;
 };
 
 /**
@@ -148,6 +197,15 @@ std::vector<double> resampleLinearNearestBoundary(const Float64VolumeView& sourc
                                                   VolumeSpacing sourceSpacing,
                                                   VolumeDimensions targetDimensions,
                                                   VolumeSpacing targetSpacing);
+
+/**
+ * @brief Calculate NumPy np.percentile(..., method="linear") for finite float64 values.
+ *
+ * The input is copied and sorted internally. Percentile must be in [0, 100].
+ *
+ * @throws std::invalid_argument If values are empty, non-finite, or percentile is invalid.
+ */
+double percentileLinearFloat64(std::span<const double> values, double percentile);
 
 /**
  * @brief Return a copy of a qtviewerpro volume reoriented to voxel-axis LPS order.
@@ -229,6 +287,23 @@ CardiacMriXyzVolume cropVolumeToWindow(const CardiacMriXyzVolume& volume,
  * @throws std::overflow_error If a cropped output element count cannot fit in memory sizes.
  */
 CardiacMriXyzVolumePair cropResampledPairToFrozenXy(
+    const CardiacMriXyzVolume& edVolume,
+    const CardiacMriXyzVolume& esVolume);
+
+/**
+ * @brief Jointly clip and z-score normalize cropped ED/ES volumes.
+ *
+ * Percentile clipping bounds, mean, and population standard deviation are
+ * computed over ED voxels followed by ES voxels in NumPy C-order for the
+ * logical XYZ shape: Z fastest, then Y, then X. The owned volume buffers remain
+ * X-fastest. Clipping and normalization arithmetic use double precision. The
+ * normalized output voxels are converted to float32 at the same stage as
+ * Python's JointIntensityNormalizer.
+ *
+ * @throws std::invalid_argument If geometry, voxel counts, values, or statistics are invalid.
+ * @throws std::overflow_error If the combined ED/ES voxel count cannot fit in memory sizes.
+ */
+CardiacMriNormalizationResult normalizeCroppedPairIntensities(
     const CardiacMriXyzVolume& edVolume,
     const CardiacMriXyzVolume& esVolume);
 

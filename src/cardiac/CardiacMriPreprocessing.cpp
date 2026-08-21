@@ -73,6 +73,15 @@ std::size_t checkedMultiply(std::size_t lhs, std::size_t rhs)
   return lhs * rhs;
 }
 
+std::size_t checkedAdd(std::size_t lhs, std::size_t rhs)
+{
+  if (rhs > std::numeric_limits<std::size_t>::max() - lhs)
+  {
+    throw std::overflow_error("Volume element count exceeds size limits");
+  }
+  return lhs + rhs;
+}
+
 std::size_t checkedElementCount(maiw::cardiac::VolumeDimensions dimensions)
 {
   return checkedMultiply(checkedMultiply(dimensions.width, dimensions.height), dimensions.depth);
@@ -530,6 +539,18 @@ bool equalVolumeSpacing(maiw::cardiac::VolumeSpacing lhs, maiw::cardiac::VolumeS
   return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
 }
 
+bool equalDirection(const Matrix3& lhs, const Matrix3& rhs)
+{
+  for (std::size_t index = 0; index < lhs.size(); ++index)
+  {
+    if (lhs[index] != rhs[index])
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 void requireMatchingXyzGeometry(const maiw::cardiac::CardiacMriXyzVolume& edVolume,
                                 const maiw::cardiac::CardiacMriXyzVolume& esVolume)
 {
@@ -540,10 +561,174 @@ void requireMatchingXyzGeometry(const maiw::cardiac::CardiacMriXyzVolume& edVolu
     throw std::invalid_argument("ED/ES resampled shape mismatch");
   }
   if (!equalVolumeSpacing(edVolume.spacing, esVolume.spacing) ||
-      edVolume.origin != esVolume.origin || edVolume.direction != esVolume.direction)
+      edVolume.origin != esVolume.origin || !equalDirection(edVolume.direction, esVolume.direction))
   {
     throw std::invalid_argument("ED/ES resampled destination geometry mismatch");
   }
+}
+
+std::size_t checkedJointVoxelCount(const maiw::cardiac::CardiacMriXyzVolume& edVolume,
+                                   const maiw::cardiac::CardiacMriXyzVolume& esVolume)
+{
+  return checkedAdd(checkedElementCount(edVolume.dimensions),
+                    checkedElementCount(esVolume.dimensions));
+}
+
+void requireFiniteVoxels(const std::vector<double>& voxels, const char* name)
+{
+  for (const double value : voxels)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument(std::string(name) + " voxels must be finite");
+    }
+  }
+}
+
+void appendVoxelsInPythonXyzCOrder(std::vector<double>& destination,
+                                   maiw::cardiac::VolumeDimensions dimensions,
+                                   const std::vector<double>& voxels)
+{
+  if (voxels.size() != checkedElementCount(dimensions))
+  {
+    throw std::invalid_argument("Voxel count does not match dimensions");
+  }
+
+  for (std::size_t x = 0; x < dimensions.width; ++x)
+  {
+    for (std::size_t y = 0; y < dimensions.height; ++y)
+    {
+      for (std::size_t z = 0; z < dimensions.depth; ++z)
+      {
+        destination.push_back(voxels[voxelIndex({dimensions.width, dimensions.height, dimensions.depth},
+                                                x,
+                                                y,
+                                                z)]);
+      }
+    }
+  }
+}
+
+std::vector<double> jointVoxelsEdThenEs(const maiw::cardiac::CardiacMriXyzVolume& edVolume,
+                                        const maiw::cardiac::CardiacMriXyzVolume& esVolume)
+{
+  const std::size_t jointCount = checkedJointVoxelCount(edVolume, esVolume);
+  std::vector<double> values;
+  values.reserve(jointCount);
+  appendVoxelsInPythonXyzCOrder(values, edVolume.dimensions, edVolume.voxels);
+  appendVoxelsInPythonXyzCOrder(values, esVolume.dimensions, esVolume.voxels);
+  return values;
+}
+
+double percentileLinear(std::vector<double> values, double percentile)
+{
+  if (values.empty())
+  {
+    throw std::invalid_argument("Percentile input must not be empty");
+  }
+  if (!std::isfinite(percentile) || percentile < 0.0 || percentile > 100.0)
+  {
+    throw std::invalid_argument("Percentile must be finite and inside [0, 100]");
+  }
+  for (const double value : values)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument("Percentile input values must be finite");
+    }
+  }
+
+  std::sort(values.begin(), values.end());
+  if (values.size() == 1U)
+  {
+    return values.front();
+  }
+
+  const double virtualIndex = (static_cast<double>(values.size()) - 1.0) * percentile / 100.0;
+  const double lowerAsDouble = std::floor(virtualIndex);
+  const auto lower = static_cast<std::size_t>(lowerAsDouble);
+  const std::size_t upper = std::min(lower + 1U, values.size() - 1U);
+  const double weight = virtualIndex - lowerAsDouble;
+  return (values[lower] * (1.0 - weight)) + (values[upper] * weight);
+}
+
+std::vector<double> clippedVoxels(const std::vector<double>& values, double lower, double upper)
+{
+  if (!std::isfinite(lower) || !std::isfinite(upper) || lower > upper)
+  {
+    throw std::invalid_argument("Clip bounds must be finite and ordered");
+  }
+
+  std::vector<double> clipped;
+  clipped.reserve(values.size());
+  for (const double value : values)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument("Clip input values must be finite");
+    }
+    clipped.push_back(std::min(std::max(value, lower), upper));
+  }
+  return clipped;
+}
+
+double meanOf(const std::vector<double>& values)
+{
+  if (values.empty())
+  {
+    throw std::invalid_argument("Mean input must not be empty");
+  }
+
+  double sum = 0.0;
+  for (const double value : values)
+  {
+    sum += value;
+  }
+  return sum / static_cast<double>(values.size());
+}
+
+double populationStdOf(const std::vector<double>& values, double mean)
+{
+  if (values.empty())
+  {
+    throw std::invalid_argument("Standard-deviation input must not be empty");
+  }
+
+  double squaredSum = 0.0;
+  for (const double value : values)
+  {
+    const double delta = value - mean;
+    squaredSum += delta * delta;
+  }
+  return std::sqrt(squaredSum / static_cast<double>(values.size()));
+}
+
+maiw::cardiac::NormalizedCardiacMriXyzVolume normalizedVolumeFrom(
+    const maiw::cardiac::CardiacMriXyzVolume& source,
+    const std::vector<double>& clipped,
+    double mean,
+    double denominator)
+{
+  if (clipped.size() != source.voxels.size())
+  {
+    throw std::invalid_argument("Clipped voxel count must match source voxel count");
+  }
+  if (!std::isfinite(mean) || !std::isfinite(denominator) || denominator <= 0.0)
+  {
+    throw std::invalid_argument("Normalization parameters must be finite and valid");
+  }
+
+  maiw::cardiac::NormalizedCardiacMriXyzVolume normalized;
+  normalized.dimensions = source.dimensions;
+  normalized.spacing = source.spacing;
+  normalized.origin = source.origin;
+  normalized.direction = source.direction;
+  normalized.voxels.reserve(clipped.size());
+  for (const double value : clipped)
+  {
+    normalized.voxels.push_back(static_cast<float>((value - mean) / denominator));
+  }
+  return normalized;
 }
 
 bool allclose(double lhs, double rhs)
@@ -768,6 +953,11 @@ std::vector<double> resampleLinearNearestBoundary(const Float64VolumeView& sourc
   return output;
 }
 
+double percentileLinearFloat64(std::span<const double> values, double percentile)
+{
+  return percentileLinear(std::vector<double>(values.begin(), values.end()), percentile);
+}
+
 qvp::VolumeData normalizeVolumeDataToLps(const qvp::VolumeData& volume)
 {
   requireValidVolumeData(volume, "volume");
@@ -931,6 +1121,43 @@ CardiacMriXyzVolumePair cropResampledPairToFrozenXy(
   const XyCropWindow window = deriveFrozenXyCenterCropWindow(edVolume);
   return CardiacMriXyzVolumePair{cropVolumeToWindow(edVolume, window),
                                  cropVolumeToWindow(esVolume, window)};
+}
+
+CardiacMriNormalizationResult normalizeCroppedPairIntensities(
+    const CardiacMriXyzVolume& edVolume,
+    const CardiacMriXyzVolume& esVolume)
+{
+  requireValidXyzVolume(edVolume, "ED volume");
+  requireValidXyzVolume(esVolume, "ES volume");
+  requireMatchingXyzGeometry(edVolume, esVolume);
+  requireFiniteVoxels(edVolume.voxels, "ED volume");
+  requireFiniteVoxels(esVolume.voxels, "ES volume");
+
+  const CardiacMriPreprocessingConfig config = frozenCardiacMriPreprocessingConfig();
+  const std::vector<double> jointValues = jointVoxelsEdThenEs(edVolume, esVolume);
+  const double clipLower = percentileLinear(jointValues, config.lowerPercentile);
+  const double clipUpper = percentileLinear(jointValues, config.upperPercentile);
+  std::vector<double> edClipped = clippedVoxels(edVolume.voxels, clipLower, clipUpper);
+  std::vector<double> esClipped = clippedVoxels(esVolume.voxels, clipLower, clipUpper);
+
+  std::vector<double> clippedJoint;
+  clippedJoint.reserve(checkedJointVoxelCount(edVolume, esVolume));
+  appendVoxelsInPythonXyzCOrder(clippedJoint, edVolume.dimensions, edClipped);
+  appendVoxelsInPythonXyzCOrder(clippedJoint, esVolume.dimensions, esClipped);
+
+  const double mean = meanOf(clippedJoint);
+  const double std = populationStdOf(clippedJoint, mean);
+  if (!std::isfinite(std) || std <= config.epsilon)
+  {
+    throw std::invalid_argument("Normalization std must be finite and greater than epsilon");
+  }
+  const double denominator = std > config.epsilon ? std : config.epsilon;
+
+  CardiacMriNormalizationResult result;
+  result.metadata = CardiacMriNormalizationMetadata{clipLower, clipUpper, mean, std};
+  result.volumes.ed = normalizedVolumeFrom(edVolume, edClipped, mean, denominator);
+  result.volumes.es = normalizedVolumeFrom(esVolume, esClipped, mean, denominator);
+  return result;
 }
 
 } // namespace maiw::cardiac

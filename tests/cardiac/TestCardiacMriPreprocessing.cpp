@@ -9,6 +9,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace
@@ -34,6 +36,15 @@ void require(bool condition, const std::string& message)
 void requireNear(double actual, double expected, const std::string& message)
 {
   if (std::fabs(actual - expected) > kTolerance)
+  {
+    throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", actual " +
+                             std::to_string(actual));
+  }
+}
+
+void requireNearTolerance(double actual, double expected, double tolerance, const std::string& message)
+{
+  if (std::fabs(actual - expected) > tolerance)
   {
     throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", actual " +
                              std::to_string(actual));
@@ -170,6 +181,22 @@ maiw::cardiac::CardiacMriXyzVolume makeXyzVolume(
   return volume;
 }
 
+maiw::cardiac::CardiacMriXyzVolume makeXyzVolumeWithVoxels(
+    VolumeDimensions dimensions,
+    std::vector<double> voxels,
+    VolumeSpacing spacing = VolumeSpacing{1.5, 1.5, 7.5},
+    std::array<double, 3> origin = {0.0, 0.0, 0.0},
+    std::array<double, 9> direction = kIdentityDirection)
+{
+  maiw::cardiac::CardiacMriXyzVolume volume;
+  volume.dimensions = dimensions;
+  volume.spacing = spacing;
+  volume.origin = origin;
+  volume.direction = direction;
+  volume.voxels = std::move(voxels);
+  return volume;
+}
+
 std::array<double, 3> physicalPoint(const qvp::VolumeData& volume,
                                     std::size_t x,
                                     std::size_t y,
@@ -243,6 +270,16 @@ void requireDirectionNear(const maiw::cardiac::CardiacMriXyzVolume& volume,
   }
 }
 
+void requireDirectionNear(const maiw::cardiac::NormalizedCardiacMriXyzVolume& volume,
+                          const std::array<double, 9>& expected,
+                          const std::string& message)
+{
+  for (std::size_t index = 0; index < expected.size(); ++index)
+  {
+    requireNear(volume.direction[index], expected[index], message);
+  }
+}
+
 void testFrozenConfig()
 {
   const auto config = maiw::cardiac::frozenCardiacMriPreprocessingConfig();
@@ -252,6 +289,9 @@ void testFrozenConfig()
   require(config.finalTensorShapeDhw.depth == 14, "final D mismatch");
   require(config.finalTensorShapeDhw.height == 144, "final H mismatch");
   require(config.finalTensorShapeDhw.width == 144, "final W mismatch");
+  requireNear(config.lowerPercentile, 0.5, "lower percentile mismatch");
+  requireNear(config.upperPercentile, 99.5, "upper percentile mismatch");
+  requireNear(config.epsilon, 1e-6, "epsilon mismatch");
 }
 
 void testTargetSizeCalculation()
@@ -942,6 +982,238 @@ void testCropRejectsOverflowingVolumeCount()
       "crop should reject overflowing source element count");
 }
 
+void testPercentileLinearFloat64()
+{
+  const std::vector<double> single{42.0};
+  requireNear(maiw::cardiac::percentileLinearFloat64(single, 0.5),
+              42.0,
+              "single-element percentile mismatch");
+
+  const std::vector<double> sorted{0.0, 10.0, 20.0, 30.0, 40.0};
+  requireNear(maiw::cardiac::percentileLinearFloat64(sorted, 50.0),
+              20.0,
+              "exact element percentile mismatch");
+  requireNear(maiw::cardiac::percentileLinearFloat64(sorted, 0.5),
+              0.2,
+              "lower linear percentile mismatch");
+  requireNear(maiw::cardiac::percentileLinearFloat64(sorted, 99.5),
+              39.8,
+              "upper linear percentile mismatch");
+
+  const std::vector<double> unsorted{40.0, 0.0, 20.0, 10.0, 30.0};
+  requireNear(maiw::cardiac::percentileLinearFloat64(unsorted, 0.5),
+              0.2,
+              "unsorted percentile mismatch");
+
+  const std::vector<double> duplicates{1.0, 1.0, 1.0, 9.0};
+  requireNear(maiw::cardiac::percentileLinearFloat64(duplicates, 99.5),
+              8.88,
+              "duplicate percentile mismatch");
+
+  const std::vector<double> negative{-10.0, 0.0, 10.0, 20.0, 100.0, 200.0};
+  requireNear(maiw::cardiac::percentileLinearFloat64(negative, 0.5),
+              -9.75,
+              "negative-value percentile mismatch");
+
+  requireThrows<std::invalid_argument>(
+      [] {
+        const std::vector<double> empty;
+        static_cast<void>(maiw::cardiac::percentileLinearFloat64(empty, 0.5));
+      },
+      "empty percentile input should be rejected");
+}
+
+void testJointIntensityNormalizationMatchesNumpyProbe()
+{
+  const VolumeDimensions dimensions{2, 2, 2};
+  const auto ed = makeXyzVolumeWithVoxels(
+      dimensions, {0.0, 1.0, 10.0, 11.0, 100.0, 101.0, 110.0, 111.0});
+  const auto es = makeXyzVolumeWithVoxels(
+      dimensions, {1000.0, 1001.0, 1010.0, 1011.0, 1100.0, 1101.0, 1110.0, 1111.0});
+
+  const maiw::cardiac::CardiacMriNormalizationResult result =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
+
+  requireNear(result.metadata.clipLower, 0.075, "NumPy lower percentile mismatch");
+  requireNear(result.metadata.clipUpper, 1110.925, "NumPy upper percentile mismatch");
+  requireNear(result.metadata.mean, 555.5, "NumPy clipped joint mean mismatch");
+  requireNear(result.metadata.std, 502.5085422936858, "NumPy population std mismatch");
+
+  const std::vector<float> expectedEd{
+      -1.1053045988082886F,
+      -1.103463888168335F,
+      -1.0855536460876465F,
+      -1.0835636854171753F,
+      -0.9064522385597229F,
+      -0.9044622182846069F,
+      -0.886552095413208F,
+      -0.884562075138092F};
+  const std::vector<float> expectedEs{
+      0.884562075138092F,
+      0.886552095413208F,
+      0.9044622182846069F,
+      0.9064522385597229F,
+      1.0835636854171753F,
+      1.0855536460876465F,
+      1.103463888168335F,
+      1.1053045988082886F};
+  for (std::size_t index = 0; index < expectedEd.size(); ++index)
+  {
+    requireNearTolerance(result.volumes.ed.voxels[index],
+                         expectedEd[index],
+                         1e-6,
+                         "NumPy normalized ED float32 mismatch");
+    requireNearTolerance(result.volumes.es.voxels[index],
+                         expectedEs[index],
+                         1e-6,
+                         "NumPy normalized ES float32 mismatch");
+  }
+}
+
+void testJointStatisticsUsePythonXyzCOrderForReal3dVolumes()
+{
+  const VolumeDimensions dimensions{2, 2, 2};
+  const auto ed = makeXyzVolumeWithVoxels(
+      dimensions, {1e16, 1.0, -1e16, 2.0, 3.0, 4.0, 5.0, 6.0});
+  const auto es = makeXyzVolumeWithVoxels(
+      dimensions, {-1e16, 7.0, 1e16, 8.0, 9.0, 10.0, 11.0, 12.0});
+
+  const maiw::cardiac::CardiacMriNormalizationResult result =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
+
+  double rawXFastestMean = 0.0;
+  for (const double value : ed.voxels)
+  {
+    rawXFastestMean += value;
+  }
+  for (const double value : es.voxels)
+  {
+    rawXFastestMean += value;
+  }
+  rawXFastestMean /= static_cast<double>(ed.voxels.size() + es.voxels.size());
+
+  requireNear(result.metadata.clipLower, -1e16, "3D order lower percentile mismatch");
+  requireNear(result.metadata.clipUpper, 1e16, "3D order upper percentile mismatch");
+  requireNear(result.metadata.mean, 5.0, "3D statistics should use Python XYZ C-order");
+  require(rawXFastestMean != result.metadata.mean,
+          "3D order regression data should differ from raw X-fastest traversal");
+}
+
+void testJointClippingAndStatisticsUseBothPhases()
+{
+  const VolumeDimensions dimensions{3, 1, 1};
+  const auto ed = makeXyzVolumeWithVoxels(dimensions, {-10.0, 0.0, 10.0});
+  const auto es = makeXyzVolumeWithVoxels(dimensions, {20.0, 100.0, 200.0});
+
+  const maiw::cardiac::CardiacMriNormalizationResult result =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
+
+  requireNear(result.metadata.clipLower, -9.75, "joint lower percentile mismatch");
+  requireNear(result.metadata.clipUpper, 197.49999999999997, "joint upper percentile mismatch");
+  requireNear(result.metadata.mean, 52.958333333333336, "joint mean mismatch");
+  requireNear(result.metadata.std, 73.9073768119409, "joint population std mismatch");
+
+  requireNearTolerance(result.volumes.ed.voxels[0],
+                       -0.8484719395637512F,
+                       1e-6,
+                       "ED should use joint lower clipping bound");
+  requireNearTolerance(result.volumes.es.voxels[2],
+                       1.9557136297225952F,
+                       1e-6,
+                       "ES should use joint upper clipping bound");
+
+  const auto changedEs = makeXyzVolumeWithVoxels(dimensions, {20.0, 100.0, 2000.0});
+  const maiw::cardiac::CardiacMriNormalizationResult changed =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, changedEs);
+  require(changed.metadata.clipUpper != result.metadata.clipUpper,
+          "changing ES values should change joint clipping bounds");
+}
+
+void testNormalizationRejectsDegenerateOrInvalidInputs()
+{
+  const VolumeDimensions dimensions{2, 1, 1};
+  const auto constantEd = makeXyzVolumeWithVoxels(dimensions, {5.0, 5.0});
+  const auto constantEs = makeXyzVolumeWithVoxels(dimensions, {5.0, 5.0});
+  requireThrows<std::invalid_argument>(
+      [&constantEd, &constantEs] {
+        static_cast<void>(maiw::cardiac::normalizeCroppedPairIntensities(constantEd, constantEs));
+      },
+      "constant joint data should reject std <= epsilon");
+
+  const auto epsilonEd = makeXyzVolumeWithVoxels(VolumeDimensions{1, 1, 1}, {-1e-6});
+  const auto epsilonEs = makeXyzVolumeWithVoxels(VolumeDimensions{1, 1, 1}, {1e-6});
+  requireThrows<std::invalid_argument>(
+      [&epsilonEd, &epsilonEs] {
+        static_cast<void>(maiw::cardiac::normalizeCroppedPairIntensities(epsilonEd, epsilonEs));
+      },
+      "std at or below epsilon should be rejected");
+
+  const auto validEd = makeXyzVolumeWithVoxels(VolumeDimensions{1, 1, 1}, {-2.0});
+  const auto validEs = makeXyzVolumeWithVoxels(VolumeDimensions{1, 1, 1}, {2.0});
+  static_cast<void>(maiw::cardiac::normalizeCroppedPairIntensities(validEd, validEs));
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto nanEd = makeXyzVolumeWithVoxels(VolumeDimensions{1, 1, 1}, {nan});
+  requireThrows<std::invalid_argument>(
+      [&nanEd, &validEs] {
+        static_cast<void>(maiw::cardiac::normalizeCroppedPairIntensities(nanEd, validEs));
+      },
+      "non-finite normalization values should be rejected");
+}
+
+void testNormalizationPreservesGeometryAndXFastestFloatOutput()
+{
+  static_assert(std::is_same_v<decltype(maiw::cardiac::NormalizedCardiacMriXyzVolume{}.voxels)::value_type,
+                               float>);
+
+  const VolumeDimensions dimensions{2, 2, 1};
+  const VolumeSpacing spacing{1.5, 2.0, 7.5};
+  const std::array<double, 3> origin{10.0, 20.0, 30.0};
+  const std::array<double, 9> direction{0.99, -0.1, 0.0,
+                                        0.1, 0.99, 0.0,
+                                        0.0, 0.0, 1.0};
+  const auto ed = makeXyzVolumeWithVoxels(dimensions,
+                                          {0.0, 1.0, 2.0, 3.0},
+                                          spacing,
+                                          origin,
+                                          direction);
+  const auto es = makeXyzVolumeWithVoxels(dimensions,
+                                          {1000.0, 1000.25, 1000.5, 1000.75},
+                                          spacing,
+                                          origin,
+                                          direction);
+
+  const maiw::cardiac::CardiacMriNormalizationResult result =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
+
+  require(result.volumes.ed.dimensions.width == dimensions.width &&
+              result.volumes.ed.dimensions.height == dimensions.height &&
+              result.volumes.ed.dimensions.depth == dimensions.depth,
+          "normalized dimensions changed");
+  requireVolumeSpacingNear(result.volumes.ed.spacing, spacing, "normalized spacing");
+  requirePointNear(result.volumes.ed.origin, origin, "normalized origin");
+  requireDirectionNear(result.volumes.ed, direction, "normalized direction");
+  require(result.volumes.ed.voxels.size() == 4, "normalized voxel count mismatch");
+  require(result.volumes.ed.voxels[0] < result.volumes.ed.voxels[1] &&
+              result.volumes.ed.voxels[1] < result.volumes.ed.voxels[2],
+          "normalized X-fastest ordering changed");
+}
+
+void testNormalizationRejectsOverflowingVolumeCount()
+{
+  maiw::cardiac::CardiacMriXyzVolume huge;
+  huge.dimensions = VolumeDimensions{2, 2, std::numeric_limits<std::size_t>::max()};
+  huge.spacing = VolumeSpacing{1.5, 1.5, 7.5};
+  huge.origin = {0.0, 0.0, 0.0};
+  huge.direction = kIdentityDirection;
+
+  requireThrows<std::overflow_error>(
+      [&huge] {
+        static_cast<void>(maiw::cardiac::normalizeCroppedPairIntensities(huge, huge));
+      },
+      "normalization should reject overflowing voxel count");
+}
+
 void testInvalidInputs()
 {
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -1040,6 +1312,13 @@ int main()
     testFrozenXyCropCopiesVoxelsAndUpdatesOrigin();
     testFrozenXyCropPairUsesSharedEdWindow();
     testCropRejectsOverflowingVolumeCount();
+    testPercentileLinearFloat64();
+    testJointIntensityNormalizationMatchesNumpyProbe();
+    testJointStatisticsUsePythonXyzCOrderForReal3dVolumes();
+    testJointClippingAndStatisticsUseBothPhases();
+    testNormalizationRejectsDegenerateOrInvalidInputs();
+    testNormalizationPreservesGeometryAndXFastestFloatOutput();
+    testNormalizationRejectsOverflowingVolumeCount();
     testInvalidInputs();
     std::cout << "Cardiac MRI preprocessing mathematical tests passed." << '\n';
     return 0;
