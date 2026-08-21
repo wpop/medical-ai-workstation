@@ -108,6 +108,30 @@ std::size_t linearIndexXyz(VolumeDimensions dimensions,
   return (z * dimensions.height * dimensions.width) + (y * dimensions.width) + x;
 }
 
+std::size_t linearIndexDhw(std::size_t depth,
+                           std::size_t height,
+                           std::size_t width,
+                           std::size_t z,
+                           std::size_t y,
+                           std::size_t x)
+{
+  (void)depth;
+  return ((z * height) + y) * width + x;
+}
+
+std::size_t linearIndexCdhw(std::size_t channels,
+                            std::size_t depth,
+                            std::size_t height,
+                            std::size_t width,
+                            std::size_t channel,
+                            std::size_t z,
+                            std::size_t y,
+                            std::size_t x)
+{
+  (void)channels;
+  return (((channel * depth) + z) * height + y) * width + x;
+}
+
 std::vector<float> makeRampVolumeFloat(std::array<std::size_t, 3> dimensions)
 {
   std::vector<float> values(dimensions[0] * dimensions[1] * dimensions[2]);
@@ -146,6 +170,33 @@ qvp::VolumeData makeQvpVolume(
                          spacing[2],
                          makeRampVolumeFloat(dimensions),
                          geometry);
+}
+
+qvp::VolumeData makeQvpVolumeWithVoxels(
+    std::array<std::size_t, 3> dimensions,
+    std::array<float, 3> spacing,
+    std::vector<float> voxels,
+    std::array<double, 3> origin = {0.0, 0.0, 0.0},
+    std::array<double, 9> direction = kIdentityDirection,
+    qvp::VolumeData::CoordinateSystem coordinateSystem = qvp::VolumeData::CoordinateSystem::LPS)
+{
+  qvp::VolumeData::SpatialGeometry geometry;
+  geometry.origin = origin;
+  geometry.direction = direction;
+  geometry.coordinateSystem = coordinateSystem;
+  geometry.hasOrientation = true;
+
+  return qvp::VolumeData(dimensions[0],
+                         dimensions[1],
+                         dimensions[2],
+                         spacing[0],
+                         spacing[1],
+                         spacing[2],
+                         std::move(voxels),
+                         geometry,
+                         qvp::VoxelAxisAnatomy{qvp::AnatomicalDirection::Left,
+                                               qvp::AnatomicalDirection::Posterior,
+                                               qvp::AnatomicalDirection::Superior});
 }
 
 std::vector<double> makeRampVolumeDouble(VolumeDimensions dimensions, double offset = 0.0)
@@ -189,6 +240,22 @@ maiw::cardiac::CardiacMriXyzVolume makeXyzVolumeWithVoxels(
     std::array<double, 9> direction = kIdentityDirection)
 {
   maiw::cardiac::CardiacMriXyzVolume volume;
+  volume.dimensions = dimensions;
+  volume.spacing = spacing;
+  volume.origin = origin;
+  volume.direction = direction;
+  volume.voxels = std::move(voxels);
+  return volume;
+}
+
+maiw::cardiac::NormalizedCardiacMriXyzVolume makeNormalizedVolumeWithVoxels(
+    VolumeDimensions dimensions,
+    std::vector<float> voxels,
+    VolumeSpacing spacing = VolumeSpacing{1.5, 1.5, 7.5},
+    std::array<double, 3> origin = {0.0, 0.0, 0.0},
+    std::array<double, 9> direction = kIdentityDirection)
+{
+  maiw::cardiac::NormalizedCardiacMriXyzVolume volume;
   volume.dimensions = dimensions;
   volume.spacing = spacing;
   volume.origin = origin;
@@ -1214,6 +1281,217 @@ void testNormalizationRejectsOverflowingVolumeCount()
       "normalization should reject overflowing voxel count");
 }
 
+void testZPaddingSemantics()
+{
+  {
+    const VolumeDimensions dimensions{2, 2, 14};
+    const std::vector<float> voxels(dimensions.width * dimensions.height * dimensions.depth, 3.0F);
+    const auto padded = maiw::cardiac::padNormalizedVolumeZToFrozenDepth(
+        makeNormalizedVolumeWithVoxels(dimensions, voxels));
+    require(padded.dimensions.width == 2 && padded.dimensions.height == 2 &&
+                padded.dimensions.depth == 14,
+            "depth-14 padding should preserve dimensions");
+    require(padded.voxels == voxels, "depth-14 padding should preserve voxels exactly");
+  }
+
+  {
+    const auto source = makeNormalizedVolumeWithVoxels(
+        VolumeDimensions{2, 2, 10},
+        std::vector<float>(2 * 2 * 10, 7.0F));
+    const auto padded = maiw::cardiac::padNormalizedVolumeZToFrozenDepth(source);
+    require(padded.dimensions.width == 2 && padded.dimensions.height == 2 &&
+                padded.dimensions.depth == 14,
+            "even Z padding dimensions mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 0)], 0.0,
+                "even lower padding value mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 1)], 0.0,
+                "even second lower padding value mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 2)], 7.0,
+                "even padding source start mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 1, 1, 11)], 7.0,
+                "even padding source end mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 12)], 0.0,
+                "even upper padding value mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 13)], 0.0,
+                "even second upper padding value mismatch");
+  }
+
+  {
+    const VolumeDimensions dimensions{2, 3, 11};
+    std::vector<float> voxels(dimensions.width * dimensions.height * dimensions.depth);
+    for (std::size_t index = 0; index < voxels.size(); ++index)
+    {
+      voxels[index] = static_cast<float>(index + 1U);
+    }
+    const auto padded = maiw::cardiac::padNormalizedVolumeZToFrozenDepth(
+        makeNormalizedVolumeWithVoxels(dimensions, voxels));
+    require(padded.dimensions.width == dimensions.width &&
+                padded.dimensions.height == dimensions.height &&
+                padded.dimensions.depth == 14,
+            "odd Z padding dimensions mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 0)], 0.0,
+                "odd lower padding value mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 1)],
+                voxels[linearIndexXyz(dimensions, 0, 0, 0)],
+                "odd padding source start mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 1, 2, 11)],
+                voxels[linearIndexXyz(dimensions, 1, 2, 10)],
+                "odd padding source end mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 12)], 0.0,
+                "odd first upper padding value mismatch");
+    requireNear(padded.voxels[linearIndexXyz(padded.dimensions, 0, 0, 13)], 0.0,
+                "odd extra upper padding value mismatch");
+  }
+
+  requireThrows<std::invalid_argument>(
+      [] {
+        static_cast<void>(maiw::cardiac::padNormalizedVolumeZToFrozenDepth(
+            makeNormalizedVolumeWithVoxels(VolumeDimensions{2, 2, 15},
+                                           std::vector<float>(2 * 2 * 15, 1.0F))));
+      },
+      "Z padding should reject depth greater than frozen depth");
+}
+
+void testXyzToZyxTransformation()
+{
+  const VolumeDimensions dimensions{144, 144, 14};
+  std::vector<float> voxels(dimensions.width * dimensions.height * dimensions.depth);
+  for (std::size_t z = 0; z < dimensions.depth; ++z)
+  {
+    for (std::size_t y = 0; y < dimensions.height; ++y)
+    {
+      for (std::size_t x = 0; x < dimensions.width; ++x)
+      {
+        voxels[linearIndexXyz(dimensions, x, y, z)] =
+            static_cast<float>(x + (1000U * y) + (1000000U * z));
+      }
+    }
+  }
+
+  const std::vector<float> dhw = maiw::cardiac::normalizedXyzVolumeToDhwContiguous(
+      makeNormalizedVolumeWithVoxels(dimensions, voxels));
+
+  require(dhw.size() == 14U * 144U * 144U, "DHW value count mismatch");
+  requireNear(dhw[linearIndexDhw(14, 144, 144, 0, 0, 0)], 0.0,
+              "DHW origin mapping mismatch");
+  requireNear(dhw[linearIndexDhw(14, 144, 144, 0, 0, 1)], 1.0,
+              "DHW W/X fastest mapping mismatch");
+  requireNear(dhw[linearIndexDhw(14, 144, 144, 0, 1, 0)], 1000.0,
+              "DHW Y mapping mismatch");
+  requireNear(dhw[linearIndexDhw(14, 144, 144, 1, 0, 0)], 1000000.0,
+              "DHW Z mapping mismatch");
+  requireNear(dhw[linearIndexDhw(14, 144, 144, 13, 143, 143)],
+              143.0 + (1000.0 * 143.0) + (1000000.0 * 13.0),
+              "DHW last voxel mapping mismatch");
+}
+
+void testStackingAndInputTensorLayout()
+{
+  const VolumeDimensions dimensions{144, 144, 14};
+  std::vector<float> ed(dimensions.width * dimensions.height * dimensions.depth);
+  std::vector<float> es(ed.size());
+  for (std::size_t z = 0; z < dimensions.depth; ++z)
+  {
+    for (std::size_t y = 0; y < dimensions.height; ++y)
+    {
+      for (std::size_t x = 0; x < dimensions.width; ++x)
+      {
+        const std::size_t index = linearIndexXyz(dimensions, x, y, z);
+        ed[index] = static_cast<float>(10000U + x + (1000U * y) + (1000000U * z));
+        es[index] = static_cast<float>(20000U + x + (1000U * y) + (1000000U * z));
+      }
+    }
+  }
+
+  const maiw::cardiac::CardiacMriInputTensor tensor =
+      maiw::cardiac::stackNormalizedPairToInputTensor(
+          makeNormalizedVolumeWithVoxels(dimensions, ed),
+          makeNormalizedVolumeWithVoxels(dimensions, es));
+
+  static_assert(std::is_same_v<std::remove_reference_t<decltype(tensor.values())>::value_type,
+                               float>);
+  require(tensor.shapeCdhw() == std::array<std::size_t, 4>{2, 14, 144, 144},
+          "input tensor shape mismatch");
+  require(tensor.values().size() == 2U * 14U * 144U * 144U,
+          "input tensor element count mismatch");
+  require(tensor.span().data() == tensor.values().data(),
+          "input tensor span should view contiguous storage");
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 0, 0, 0, 0)],
+              10000.0,
+              "channel 0 ED first value mismatch");
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 1, 0, 0, 0)],
+              20000.0,
+              "channel 1 ES first value mismatch");
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 0, 1, 0, 0)],
+              1010000.0,
+              "CDHW depth stride mismatch");
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 0, 0, 0, 1)],
+              10001.0,
+              "CDHW W/X fastest stride mismatch");
+
+  requireThrows<std::invalid_argument>(
+      [] {
+        static_cast<void>(maiw::cardiac::CardiacMriInputTensor(std::vector<float>{1.0F}));
+      },
+      "input tensor should reject invalid element count");
+}
+
+void testFullSyntheticPreprocessorPipeline()
+{
+  const std::array<std::size_t, 3> dimensions{144, 144, 13};
+  std::vector<float> ed(dimensions[0] * dimensions[1] * dimensions[2]);
+  std::vector<float> es(ed.size());
+  for (std::size_t z = 0; z < dimensions[2]; ++z)
+  {
+    for (std::size_t y = 0; y < dimensions[1]; ++y)
+    {
+      for (std::size_t x = 0; x < dimensions[0]; ++x)
+      {
+        const std::size_t index = linearIndex(dimensions, x, y, z);
+        ed[index] = static_cast<float>(x + (2U * y) + (3U * z));
+        es[index] = static_cast<float>(1000U + x + (2U * y) + (3U * z));
+      }
+    }
+  }
+
+  const qvp::VolumeData edVolume =
+      makeQvpVolumeWithVoxels(dimensions, {1.5F, 1.5F, 7.5F}, ed);
+  const qvp::VolumeData esVolume =
+      makeQvpVolumeWithVoxels(dimensions, {1.5F, 1.5F, 7.5F}, es);
+
+  const maiw::cardiac::CardiacMriPreprocessor preprocessor;
+  const maiw::cardiac::CardiacMriInputTensor tensor =
+      preprocessor.preprocess(edVolume, esVolume);
+
+  require(tensor.shapeCdhw() == std::array<std::size_t, 4>{2, 14, 144, 144},
+          "full preprocessor tensor shape mismatch");
+  require(tensor.values().size() == maiw::cardiac::CardiacMriInputTensor::elementCount(),
+          "full preprocessor tensor count mismatch");
+  for (const float value : tensor.values())
+  {
+    require(std::isfinite(value), "full preprocessor tensor must be finite");
+  }
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 0, 13, 0, 0)],
+              0.0,
+              "upper Z padding should be zero after full preprocessing");
+  requireNear(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 1, 13, 0, 0)],
+              0.0,
+              "ES upper Z padding should be zero after full preprocessing");
+  require(tensor.values()[linearIndexCdhw(2, 14, 144, 144, 0, 0, 0, 0)] <
+              tensor.values()[linearIndexCdhw(2, 14, 144, 144, 1, 0, 0, 0)],
+          "ED/ES channel order should be preserved end-to-end");
+
+  const qvp::VolumeData deepEd =
+      makeQvpVolume({144, 144, 15}, {1.5F, 1.5F, 7.5F}, {0.0, 0.0, 0.0}, kIdentityDirection);
+  const qvp::VolumeData deepEs =
+      makeQvpVolume({144, 144, 15}, {1.5F, 1.5F, 7.5F}, {0.0, 0.0, 0.0}, kIdentityDirection);
+  requireThrows<std::invalid_argument>(
+      [&preprocessor, &deepEd, &deepEs] {
+        static_cast<void>(preprocessor.preprocess(deepEd, deepEs));
+      },
+      "full preprocessor should reject normalized depth greater than frozen depth");
+}
+
 void testInvalidInputs()
 {
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -1319,6 +1597,10 @@ int main()
     testNormalizationRejectsDegenerateOrInvalidInputs();
     testNormalizationPreservesGeometryAndXFastestFloatOutput();
     testNormalizationRejectsOverflowingVolumeCount();
+    testZPaddingSemantics();
+    testXyzToZyxTransformation();
+    testStackingAndInputTensorLayout();
+    testFullSyntheticPreprocessorPipeline();
     testInvalidInputs();
     std::cout << "Cardiac MRI preprocessing mathematical tests passed." << '\n';
     return 0;

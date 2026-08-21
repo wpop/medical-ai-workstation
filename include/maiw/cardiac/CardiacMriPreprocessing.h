@@ -138,6 +138,55 @@ struct CardiacMriNormalizationResult
 };
 
 /**
+ * @brief Owned float32 CDHW tensor for the frozen cardiac MRI model input.
+ *
+ * The tensor has no batch dimension. It is directly usable as the contiguous
+ * NCDHW payload after a caller adds N=1. Layout is C-contiguous CDHW with
+ * channel 0 = ED and channel 1 = ES.
+ */
+class CardiacMriInputTensor
+{
+public:
+  static constexpr std::size_t kChannels = 2;
+  static constexpr std::size_t kDepth = 14;
+  static constexpr std::size_t kHeight = 144;
+  static constexpr std::size_t kWidth = 144;
+
+  /**
+   * @brief Construct and validate an owned frozen CDHW tensor payload.
+   *
+   * @throws std::invalid_argument If the value count or any value is invalid.
+   */
+  explicit CardiacMriInputTensor(std::vector<float> values);
+
+  /**
+   * @brief Return the immutable contiguous CDHW tensor values.
+   */
+  [[nodiscard]] const std::vector<float>& values() const noexcept;
+
+  /**
+   * @brief Return a non-owning view of the contiguous CDHW tensor values.
+   */
+  [[nodiscard]] std::span<const float> span() const noexcept;
+
+  /**
+   * @brief Return the fixed CDHW tensor shape as {2, 14, 144, 144}.
+   */
+  [[nodiscard]] std::array<std::size_t, 4> shapeCdhw() const noexcept;
+
+  /**
+   * @brief Return the total frozen tensor element count.
+   */
+  [[nodiscard]] static constexpr std::size_t elementCount() noexcept
+  {
+    return kChannels * kDepth * kHeight * kWidth;
+  }
+
+private:
+  std::vector<float> values_;
+};
+
+/**
  * @brief Shared XY crop window in XYZ coordinates.
  */
 struct XyCropWindow
@@ -306,5 +355,65 @@ CardiacMriXyzVolumePair cropResampledPairToFrozenXy(
 CardiacMriNormalizationResult normalizeCroppedPairIntensities(
     const CardiacMriXyzVolume& edVolume,
     const CardiacMriXyzVolume& esVolume);
+
+/**
+ * @brief Center-pad one normalized XYZ volume in Z to the frozen depth.
+ *
+ * Padding is applied after normalization only, uses 0.0f, preserves X-fastest
+ * XYZ storage, and places the extra slice on the upper-Z side for odd padding.
+ *
+ * @throws std::invalid_argument If the volume is invalid or would require Z cropping.
+ * @throws std::overflow_error If the output element count cannot fit in memory sizes.
+ */
+NormalizedCardiacMriXyzVolume padNormalizedVolumeZToFrozenDepth(
+    const NormalizedCardiacMriXyzVolume& volume);
+
+/**
+ * @brief Convert one normalized XYZ volume to contiguous DHW model layout.
+ *
+ * The mapping matches Python np.transpose(array_xyz, (2, 1, 0)); the returned
+ * vector is C-contiguous DHW with W/X fastest.
+ *
+ * @throws std::invalid_argument If the volume is invalid or not the frozen spatial shape.
+ * @throws std::overflow_error If the output element count cannot fit in memory sizes.
+ */
+std::vector<float> normalizedXyzVolumeToDhwContiguous(
+    const NormalizedCardiacMriXyzVolume& volume);
+
+/**
+ * @brief Stack padded normalized ED and ES volumes into a frozen CDHW tensor.
+ *
+ * Channel 0 is ED and channel 1 is ES. The returned tensor owns a C-contiguous
+ * float32 [2, 14, 144, 144] payload and contains no batch dimension.
+ *
+ * @throws std::invalid_argument If either volume is invalid or contains non-finite values.
+ * @throws std::overflow_error If the output element count cannot fit in memory sizes.
+ */
+CardiacMriInputTensor stackNormalizedPairToInputTensor(
+    const NormalizedCardiacMriXyzVolume& edVolume,
+    const NormalizedCardiacMriXyzVolume& esVolume);
+
+/**
+ * @brief Frozen production cardiac MRI preprocessing orchestrator.
+ *
+ * The preprocessor accepts standalone ED and ES qtviewerpro volumes, normalizes
+ * them to LPS, validates the oriented pair, resamples both on the ED-derived
+ * physical grid, applies the shared FOV-center XY crop, jointly clips and
+ * z-score normalizes pre-padding voxels, center-pads Z, transforms XYZ to ZYX,
+ * and stacks ED/ES into a float32 CDHW tensor. Phase 5 owns Python/C++
+ * numerical golden preprocessing parity validation.
+ */
+class CardiacMriPreprocessor
+{
+public:
+  /**
+   * @brief Preprocess standalone ED and ES volumes into the frozen model tensor.
+   *
+   * @throws std::invalid_argument If input geometry, values, or output invariants are invalid.
+   * @throws std::overflow_error If an intermediate or output element count cannot fit.
+   */
+  [[nodiscard]] CardiacMriInputTensor preprocess(const qvp::VolumeData& edVolume,
+                                                 const qvp::VolumeData& esVolume) const;
+};
 
 } // namespace maiw::cardiac

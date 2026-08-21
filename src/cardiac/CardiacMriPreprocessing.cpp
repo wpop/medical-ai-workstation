@@ -585,6 +585,17 @@ void requireFiniteVoxels(const std::vector<double>& voxels, const char* name)
   }
 }
 
+void requireFiniteFloatVoxels(const std::vector<float>& voxels, const char* name)
+{
+  for (const float value : voxels)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument(std::string(name) + " voxels must be finite");
+    }
+  }
+}
+
 void appendVoxelsInPythonXyzCOrder(std::vector<double>& destination,
                                    maiw::cardiac::VolumeDimensions dimensions,
                                    const std::vector<double>& voxels)
@@ -731,6 +742,45 @@ maiw::cardiac::NormalizedCardiacMriXyzVolume normalizedVolumeFrom(
   return normalized;
 }
 
+void requireValidNormalizedXyzVolume(const maiw::cardiac::NormalizedCardiacMriXyzVolume& volume,
+                                     const char* name)
+{
+  requireValidDimensions(volume.dimensions);
+  requireValidSpacing(volume.spacing);
+  for (const double value : volume.origin)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument(std::string(name) + " origin must be finite");
+    }
+  }
+  for (const double value : volume.direction)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument(std::string(name) + " direction must be finite");
+    }
+  }
+  if (volume.voxels.size() != checkedElementCount(volume.dimensions))
+  {
+    throw std::invalid_argument(std::string(name) + " voxel count does not match dimensions");
+  }
+  requireFiniteFloatVoxels(volume.voxels, name);
+}
+
+std::size_t cdhwIndex(std::size_t channel,
+                      std::size_t depth,
+                      std::size_t height,
+                      std::size_t width)
+{
+  const CardiacMriPreprocessingConfig config = maiw::cardiac::frozenCardiacMriPreprocessingConfig();
+  return (((channel * config.finalTensorShapeDhw.depth) + depth) *
+              config.finalTensorShapeDhw.height +
+          height) *
+             config.finalTensorShapeDhw.width +
+         width;
+}
+
 bool allclose(double lhs, double rhs)
 {
   if (!std::isfinite(lhs) || !std::isfinite(rhs))
@@ -799,6 +849,31 @@ namespace maiw::cardiac
 CardiacMriPreprocessingConfig frozenCardiacMriPreprocessingConfig() noexcept
 {
   return CardiacMriPreprocessingConfig{};
+}
+
+CardiacMriInputTensor::CardiacMriInputTensor(std::vector<float> values)
+    : values_(std::move(values))
+{
+  if (values_.size() != elementCount())
+  {
+    throw std::invalid_argument("Cardiac MRI input tensor value count mismatch");
+  }
+  requireFiniteFloatVoxels(values_, "Cardiac MRI input tensor");
+}
+
+const std::vector<float>& CardiacMriInputTensor::values() const noexcept
+{
+  return values_;
+}
+
+std::span<const float> CardiacMriInputTensor::span() const noexcept
+{
+  return values_;
+}
+
+std::array<std::size_t, 4> CardiacMriInputTensor::shapeCdhw() const noexcept
+{
+  return {kChannels, kDepth, kHeight, kWidth};
 }
 
 std::size_t roundHalfToEvenNonNegative(double value)
@@ -1158,6 +1233,123 @@ CardiacMriNormalizationResult normalizeCroppedPairIntensities(
   result.volumes.ed = normalizedVolumeFrom(edVolume, edClipped, mean, denominator);
   result.volumes.es = normalizedVolumeFrom(esVolume, esClipped, mean, denominator);
   return result;
+}
+
+NormalizedCardiacMriXyzVolume padNormalizedVolumeZToFrozenDepth(
+    const NormalizedCardiacMriXyzVolume& volume)
+{
+  requireValidNormalizedXyzVolume(volume, "volume");
+
+  const CardiacMriPreprocessingConfig config = frozenCardiacMriPreprocessingConfig();
+  const std::size_t targetDepth = config.finalTensorShapeDhw.depth;
+  if (volume.dimensions.depth > targetDepth)
+  {
+    throw std::invalid_argument("Z cropping would be required for frozen depth");
+  }
+
+  const std::size_t totalPadding = targetDepth - volume.dimensions.depth;
+  const std::size_t lowerPadding = totalPadding / 2U;
+  const VolumeDimensions paddedDimensions{
+      volume.dimensions.width,
+      volume.dimensions.height,
+      targetDepth};
+  std::vector<float> paddedVoxels(checkedElementCount(paddedDimensions), 0.0F);
+
+  for (std::size_t z = 0; z < volume.dimensions.depth; ++z)
+  {
+    for (std::size_t y = 0; y < volume.dimensions.height; ++y)
+    {
+      for (std::size_t x = 0; x < volume.dimensions.width; ++x)
+      {
+        paddedVoxels[voxelIndex(paddedDimensions, x, y, lowerPadding + z)] =
+            volume.voxels[voxelIndex(volume.dimensions, x, y, z)];
+      }
+    }
+  }
+
+  NormalizedCardiacMriXyzVolume padded;
+  padded.dimensions = paddedDimensions;
+  padded.spacing = volume.spacing;
+  padded.origin = volume.origin;
+  padded.direction = volume.direction;
+  padded.voxels = std::move(paddedVoxels);
+  return padded;
+}
+
+std::vector<float> normalizedXyzVolumeToDhwContiguous(
+    const NormalizedCardiacMriXyzVolume& volume)
+{
+  requireValidNormalizedXyzVolume(volume, "volume");
+
+  const CardiacMriPreprocessingConfig config = frozenCardiacMriPreprocessingConfig();
+  if (volume.dimensions.width != config.finalTensorShapeDhw.width ||
+      volume.dimensions.height != config.finalTensorShapeDhw.height ||
+      volume.dimensions.depth != config.finalTensorShapeDhw.depth)
+  {
+    throw std::invalid_argument("Normalized volume must match frozen DHW tensor shape");
+  }
+
+  std::vector<float> output(checkedElementCount(volume.dimensions));
+  for (std::size_t z = 0; z < volume.dimensions.depth; ++z)
+  {
+    for (std::size_t y = 0; y < volume.dimensions.height; ++y)
+    {
+      for (std::size_t x = 0; x < volume.dimensions.width; ++x)
+      {
+        const std::size_t outputIndex =
+            ((z * config.finalTensorShapeDhw.height) + y) * config.finalTensorShapeDhw.width + x;
+        output[outputIndex] = volume.voxels[voxelIndex(volume.dimensions, x, y, z)];
+      }
+    }
+  }
+  return output;
+}
+
+CardiacMriInputTensor stackNormalizedPairToInputTensor(
+    const NormalizedCardiacMriXyzVolume& edVolume,
+    const NormalizedCardiacMriXyzVolume& esVolume)
+{
+  const std::vector<float> edDhw = normalizedXyzVolumeToDhwContiguous(edVolume);
+  const std::vector<float> esDhw = normalizedXyzVolumeToDhwContiguous(esVolume);
+  if (edDhw.size() != esDhw.size())
+  {
+    throw std::invalid_argument("ED/ES DHW tensor value count mismatch");
+  }
+
+  std::vector<float> values(CardiacMriInputTensor::elementCount());
+  const CardiacMriPreprocessingConfig config = frozenCardiacMriPreprocessingConfig();
+  for (std::size_t z = 0; z < config.finalTensorShapeDhw.depth; ++z)
+  {
+    for (std::size_t y = 0; y < config.finalTensorShapeDhw.height; ++y)
+    {
+      for (std::size_t x = 0; x < config.finalTensorShapeDhw.width; ++x)
+      {
+        const std::size_t dhwIndex =
+            ((z * config.finalTensorShapeDhw.height) + y) * config.finalTensorShapeDhw.width + x;
+        values[cdhwIndex(0, z, y, x)] = edDhw[dhwIndex];
+        values[cdhwIndex(1, z, y, x)] = esDhw[dhwIndex];
+      }
+    }
+  }
+  return CardiacMriInputTensor(std::move(values));
+}
+
+CardiacMriInputTensor CardiacMriPreprocessor::preprocess(const qvp::VolumeData& edVolume,
+                                                         const qvp::VolumeData& esVolume) const
+{
+  const qvp::VolumeData edLps = normalizeVolumeDataToLps(edVolume);
+  const qvp::VolumeData esLps = normalizeVolumeDataToLps(esVolume);
+  validateLpsOrientedVolumePair(edLps, esLps);
+
+  const CardiacMriXyzVolumePair resampled = resampleOrientedPairToEdDerivedGrid(edLps, esLps);
+  const CardiacMriXyzVolumePair cropped = cropResampledPairToFrozenXy(resampled.ed, resampled.es);
+  const CardiacMriNormalizationResult normalized =
+      normalizeCroppedPairIntensities(cropped.ed, cropped.es);
+  const NormalizedCardiacMriXyzVolume edPadded =
+      padNormalizedVolumeZToFrozenDepth(normalized.volumes.ed);
+  const NormalizedCardiacMriXyzVolume esPadded =
+      padNormalizedVolumeZToFrozenDepth(normalized.volumes.es);
+  return stackNormalizedPairToInputTensor(edPadded, esPadded);
 }
 
 } // namespace maiw::cardiac
