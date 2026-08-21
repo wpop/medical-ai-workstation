@@ -1,5 +1,8 @@
 #include "maiw/cardiac/CardiacMriPreprocessing.h"
 
+#include "qtviewerpro/core/VolumeData.h"
+
+#include <array>
 #include <cmath>
 #include <exception>
 #include <iostream>
@@ -16,6 +19,9 @@ using maiw::cardiac::VolumeDimensions;
 using maiw::cardiac::VolumeSpacing;
 
 constexpr double kTolerance = 1e-12;
+constexpr std::array<double, 9> kIdentityDirection{1.0, 0.0, 0.0,
+                                                   0.0, 1.0, 0.0,
+                                                   0.0, 0.0, 1.0};
 
 void require(bool condition, const std::string& message)
 {
@@ -73,6 +79,94 @@ std::vector<double> makeRampVolume(VolumeDimensions dimensions)
 Float64VolumeView viewOf(VolumeDimensions dimensions, const std::vector<double>& values)
 {
   return Float64VolumeView{dimensions, values};
+}
+
+std::size_t linearIndex(std::array<std::size_t, 3> dimensions,
+                        std::size_t x,
+                        std::size_t y,
+                        std::size_t z)
+{
+  return (z * dimensions[1] * dimensions[0]) + (y * dimensions[0]) + x;
+}
+
+std::vector<float> makeRampVolumeFloat(std::array<std::size_t, 3> dimensions)
+{
+  std::vector<float> values(dimensions[0] * dimensions[1] * dimensions[2]);
+  for (std::size_t z = 0; z < dimensions[2]; ++z)
+  {
+    for (std::size_t y = 0; y < dimensions[1]; ++y)
+    {
+      for (std::size_t x = 0; x < dimensions[0]; ++x)
+      {
+        values[linearIndex(dimensions, x, y, z)] =
+            static_cast<float>(x + (10U * y) + (100U * z));
+      }
+    }
+  }
+  return values;
+}
+
+qvp::VolumeData makeQvpVolume(
+    std::array<std::size_t, 3> dimensions,
+    std::array<float, 3> spacing,
+    std::array<double, 3> origin,
+    std::array<double, 9> direction,
+    qvp::VolumeData::CoordinateSystem coordinateSystem = qvp::VolumeData::CoordinateSystem::LPS)
+{
+  qvp::VolumeData::SpatialGeometry geometry;
+  geometry.origin = origin;
+  geometry.direction = direction;
+  geometry.coordinateSystem = coordinateSystem;
+  geometry.hasOrientation = true;
+
+  return qvp::VolumeData(dimensions[0],
+                         dimensions[1],
+                         dimensions[2],
+                         spacing[0],
+                         spacing[1],
+                         spacing[2],
+                         makeRampVolumeFloat(dimensions),
+                         geometry);
+}
+
+std::array<double, 3> physicalPoint(const qvp::VolumeData& volume,
+                                    std::size_t x,
+                                    std::size_t y,
+                                    std::size_t z)
+{
+  const auto& geometry = volume.spatialGeometry();
+  const std::array<double, 3> scaled{
+      static_cast<double>(x) * static_cast<double>(volume.spacingX()),
+      static_cast<double>(y) * static_cast<double>(volume.spacingY()),
+      static_cast<double>(z) * static_cast<double>(volume.spacingZ())};
+
+  return {geometry.origin[0] + (geometry.direction[0] * scaled[0]) +
+              (geometry.direction[1] * scaled[1]) + (geometry.direction[2] * scaled[2]),
+          geometry.origin[1] + (geometry.direction[3] * scaled[0]) +
+              (geometry.direction[4] * scaled[1]) + (geometry.direction[5] * scaled[2]),
+          geometry.origin[2] + (geometry.direction[6] * scaled[0]) +
+              (geometry.direction[7] * scaled[1]) + (geometry.direction[8] * scaled[2])};
+}
+
+void requirePointNear(const std::array<double, 3>& actual,
+                      const std::array<double, 3>& expected,
+                      const std::string& message)
+{
+  for (std::size_t axis = 0; axis < 3; ++axis)
+  {
+    requireNear(actual[axis], expected[axis], message);
+  }
+}
+
+void requireDirectionNear(const qvp::VolumeData& volume,
+                          const std::array<double, 9>& expected,
+                          const std::string& message)
+{
+  const auto& actual = volume.spatialGeometry().direction;
+  for (std::size_t index = 0; index < expected.size(); ++index)
+  {
+    requireNear(actual[index], expected[index], message);
+  }
 }
 
 void testFrozenConfig()
@@ -264,6 +358,327 @@ void testResamplingWithSingleSourceDimension()
   requireNear(output[4], 55.0, "single-source-dimension resampling center mismatch");
 }
 
+void testAlreadyLpsVolumeRemainsVoxelIdentical()
+{
+  const auto volume = makeQvpVolume({2, 3, 4},
+                                   {1.0F, 2.0F, 3.0F},
+                                   {10.0, 20.0, 30.0},
+                                   kIdentityDirection);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.width() == 2 && oriented.height() == 3 && oriented.depth() == 4,
+          "already-LPS dimensions changed");
+  require(oriented.voxels() == volume.voxels(), "already-LPS voxels changed");
+  requireNear(oriented.spacingX(), 1.0, "already-LPS spacing X changed");
+  requireNear(oriented.spacingY(), 2.0, "already-LPS spacing Y changed");
+  requireNear(oriented.spacingZ(), 3.0, "already-LPS spacing Z changed");
+  requireDirectionNear(oriented, kIdentityDirection, "already-LPS direction changed");
+  requirePointNear(oriented.spatialGeometry().origin,
+                   volume.spatialGeometry().origin,
+                   "already-LPS origin changed");
+}
+
+void testSingleAxisFlipsToLps()
+{
+  {
+    const std::array<double, 9> direction{-1.0, 0.0, 0.0,
+                                          0.0, 1.0, 0.0,
+                                          0.0, 0.0, 1.0};
+    const auto volume = makeQvpVolume({3, 2, 2}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+    const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+    require(oriented.voxels()[linearIndex({3, 2, 2}, 0, 1, 1)] ==
+                volume.voxels()[linearIndex({3, 2, 2}, 2, 1, 1)],
+            "single X flip voxel remapping mismatch");
+    requireDirectionNear(oriented, kIdentityDirection, "single X flip direction mismatch");
+    requirePointNear(physicalPoint(oriented, 0, 1, 1),
+                     physicalPoint(volume, 2, 1, 1),
+                     "single X flip physical point mismatch");
+  }
+  {
+    const std::array<double, 9> direction{1.0, 0.0, 0.0,
+                                          0.0, -1.0, 0.0,
+                                          0.0, 0.0, 1.0};
+    const auto volume = makeQvpVolume({2, 3, 2}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+    const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+    require(oriented.voxels()[linearIndex({2, 3, 2}, 1, 0, 1)] ==
+                volume.voxels()[linearIndex({2, 3, 2}, 1, 2, 1)],
+            "single Y flip voxel remapping mismatch");
+    requireDirectionNear(oriented, kIdentityDirection, "single Y flip direction mismatch");
+    requirePointNear(physicalPoint(oriented, 1, 0, 1),
+                     physicalPoint(volume, 1, 2, 1),
+                     "single Y flip physical point mismatch");
+  }
+  {
+    const std::array<double, 9> direction{1.0, 0.0, 0.0,
+                                          0.0, 1.0, 0.0,
+                                          0.0, 0.0, -1.0};
+    const auto volume = makeQvpVolume({2, 2, 3}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+    const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+    require(oriented.voxels()[linearIndex({2, 2, 3}, 1, 1, 0)] ==
+                volume.voxels()[linearIndex({2, 2, 3}, 1, 1, 2)],
+            "single Z flip voxel remapping mismatch");
+    requireDirectionNear(oriented, kIdentityDirection, "single Z flip direction mismatch");
+    requirePointNear(physicalPoint(oriented, 1, 1, 0),
+                     physicalPoint(volume, 1, 1, 2),
+                     "single Z flip physical point mismatch");
+  }
+}
+
+void testAxisPermutationWithoutFlip()
+{
+  const std::array<double, 9> direction{0.0, 1.0, 0.0,
+                                        1.0, 0.0, 0.0,
+                                        0.0, 0.0, 1.0};
+  const auto volume = makeQvpVolume({2, 3, 4}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.width() == 3 && oriented.height() == 2 && oriented.depth() == 4,
+          "permutation dimensions mismatch");
+  requireNear(oriented.spacingX(), 3.0, "permutation spacing X mismatch");
+  requireNear(oriented.spacingY(), 2.0, "permutation spacing Y mismatch");
+  requireNear(oriented.spacingZ(), 4.0, "permutation spacing Z mismatch");
+  require(oriented.voxels()[linearIndex({3, 2, 4}, 2, 1, 3)] ==
+              volume.voxels()[linearIndex({2, 3, 4}, 1, 2, 3)],
+          "permutation voxel remapping mismatch");
+  requireDirectionNear(oriented, kIdentityDirection, "permutation direction mismatch");
+  requirePointNear(physicalPoint(oriented, 2, 1, 3),
+                   physicalPoint(volume, 1, 2, 3),
+                   "permutation physical point mismatch");
+}
+
+void testPermutationPlusFlip()
+{
+  const std::array<double, 9> direction{0.0, 0.0, -1.0,
+                                        -1.0, 0.0, 0.0,
+                                        0.0, 1.0, 0.0};
+  const auto volume = makeQvpVolume({2, 3, 4}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.width() == 4 && oriented.height() == 2 && oriented.depth() == 3,
+          "permutation-plus-flip dimensions mismatch");
+  requireNear(oriented.spacingX(), 4.0, "permutation-plus-flip spacing X mismatch");
+  requireNear(oriented.spacingY(), 2.0, "permutation-plus-flip spacing Y mismatch");
+  requireNear(oriented.spacingZ(), 3.0, "permutation-plus-flip spacing Z mismatch");
+  require(oriented.voxels()[linearIndex({4, 2, 3}, 0, 0, 0)] ==
+              volume.voxels()[linearIndex({2, 3, 4}, 1, 0, 3)],
+          "permutation-plus-flip voxel remapping mismatch");
+  requireDirectionNear(oriented, kIdentityDirection, "permutation-plus-flip direction mismatch");
+  requirePointNear(physicalPoint(oriented, 0, 0, 0),
+                   physicalPoint(volume, 1, 0, 3),
+                   "permutation-plus-flip origin physical point mismatch");
+  requirePointNear(physicalPoint(oriented, 3, 1, 2),
+                   physicalPoint(volume, 0, 2, 0),
+                   "permutation-plus-flip corner physical point mismatch");
+}
+
+void testXFastestIndexingAfterReorientation()
+{
+  const std::array<double, 9> direction{0.0, 1.0, 0.0,
+                                        1.0, 0.0, 0.0,
+                                        0.0, 0.0, 1.0};
+  const auto volume = makeQvpVolume({3, 2, 1}, {1.0F, 1.0F, 1.0F}, {0.0, 0.0, 0.0}, direction);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.voxels()[0] == volume.voxels()[0], "X-fastest first voxel mismatch");
+  require(oriented.voxels()[1] == volume.voxels()[linearIndex({3, 2, 1}, 0, 1, 0)],
+          "X-fastest adjacent-X voxel mismatch");
+  require(oriented.voxels()[oriented.width()] == volume.voxels()[linearIndex({3, 2, 1}, 1, 0, 0)],
+          "X-fastest next-row voxel mismatch");
+}
+
+void testMultipleAxisFlipsPreservePhysicalLocations()
+{
+  const std::array<double, 9> direction{-1.0, 0.0, 0.0,
+                                        0.0, -1.0, 0.0,
+                                        0.0, 0.0, 1.0};
+  const auto volume = makeQvpVolume({3, 4, 2}, {2.0F, 3.0F, 4.0F}, {10.0, 20.0, 30.0}, direction);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  requirePointNear(physicalPoint(oriented, 0, 0, 1),
+                   physicalPoint(volume, 2, 3, 1),
+                   "multiple-axis flip lower corner physical point mismatch");
+  requirePointNear(physicalPoint(oriented, 2, 3, 0),
+                   physicalPoint(volume, 0, 0, 0),
+                   "multiple-axis flip upper corner physical point mismatch");
+}
+
+void testRasCoordinateSystemIsConvertedToLps()
+{
+  const auto volume = makeQvpVolume({3, 4, 2},
+                                   {2.0F, 3.0F, 4.0F},
+                                   {10.0, 20.0, 30.0},
+                                   kIdentityDirection,
+                                   qvp::VolumeData::CoordinateSystem::RAS);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.spatialGeometry().coordinateSystem == qvp::VolumeData::CoordinateSystem::LPS,
+          "RAS input should produce LPS geometry");
+  requireDirectionNear(oriented, kIdentityDirection, "RAS-to-LPS direction mismatch");
+  require(oriented.voxels()[linearIndex({3, 4, 2}, 0, 0, 1)] ==
+              volume.voxels()[linearIndex({3, 4, 2}, 2, 3, 1)],
+          "RAS-to-LPS voxel remapping mismatch");
+  requirePointNear(physicalPoint(oriented, 0, 0, 1),
+                   std::array<double, 3>{-14.0, -29.0, 34.0},
+                   "RAS-to-LPS physical point mismatch");
+}
+
+void testOrientedPairValidation()
+{
+  const qvp::VolumeData ed = maiw::cardiac::normalizeVolumeDataToLps(
+      makeQvpVolume({2, 3, 4}, {1.0F, 2.0F, 3.0F}, {10.0, 20.0, 30.0}, kIdentityDirection));
+  qvp::VolumeData es = maiw::cardiac::normalizeVolumeDataToLps(
+      makeQvpVolume({2, 3, 4}, {1.0F, 2.0F, 3.0F}, {-1.0, -2.0, -3.0}, kIdentityDirection));
+
+  maiw::cardiac::validateLpsOrientedVolumePair(ed, es);
+
+  requireThrows<std::invalid_argument>(
+      [&ed] {
+        const qvp::VolumeData mismatched = maiw::cardiac::normalizeVolumeDataToLps(
+            makeQvpVolume({2, 3, 5}, {1.0F, 2.0F, 3.0F}, {10.0, 20.0, 30.0}, kIdentityDirection));
+        maiw::cardiac::validateLpsOrientedVolumePair(ed, mismatched);
+      },
+      "oriented pair shape mismatch should be rejected");
+  requireThrows<std::invalid_argument>(
+      [&ed] {
+        const qvp::VolumeData mismatched = maiw::cardiac::normalizeVolumeDataToLps(
+            makeQvpVolume({2, 3, 4},
+                          {std::nextafter(1.0F, 2.0F), 2.0F, 3.0F},
+                          {10.0, 20.0, 30.0},
+                          kIdentityDirection));
+        maiw::cardiac::validateLpsOrientedVolumePair(ed, mismatched);
+      },
+      "oriented pair spacing mismatch should be rejected");
+  const double angle = 0.01;
+  const double cosine = std::cos(angle);
+  const double sine = std::sin(angle);
+  const std::array<double, 9> rotatedDirection{cosine, -sine, 0.0,
+                                               sine, cosine, 0.0,
+                                               0.0, 0.0, 1.0};
+  const qvp::VolumeData rotated = maiw::cardiac::normalizeVolumeDataToLps(
+      makeQvpVolume({2, 3, 4}, {1.0F, 2.0F, 3.0F}, {10.0, 20.0, 30.0}, rotatedDirection));
+  maiw::cardiac::validateLpsOrientedVolumePair(rotated, rotated);
+  requireThrows<std::invalid_argument>(
+      [&ed, &rotated] { maiw::cardiac::validateLpsOrientedVolumePair(ed, rotated); },
+      "valid oriented pair direction-spacing matrix mismatch should be rejected");
+
+  qvp::VolumeData::SpatialGeometry shiftedGeometry = es.spatialGeometry();
+  shiftedGeometry.origin = {999.0, -999.0, 42.0};
+  es = qvp::VolumeData(es.width(),
+                       es.height(),
+                       es.depth(),
+                       es.spacingX(),
+                       es.spacingY(),
+                       es.spacingZ(),
+                       es.voxels(),
+                       shiftedGeometry,
+                       es.voxelAxisAnatomy());
+  maiw::cardiac::validateLpsOrientedVolumePair(ed, es);
+}
+
+void testValidMildlyObliqueOrientationIsAccepted()
+{
+  const double angle = 0.25;
+  const double cosine = std::cos(angle);
+  const double sine = std::sin(angle);
+  const std::array<double, 9> direction{cosine, -sine, 0.0,
+                                        sine, cosine, 0.0,
+                                        0.0, 0.0, 1.0};
+  const auto volume = makeQvpVolume({2, 3, 4}, {1.0F, 2.0F, 3.0F}, {10.0, 20.0, 30.0}, direction);
+  const qvp::VolumeData oriented = maiw::cardiac::normalizeVolumeDataToLps(volume);
+
+  require(oriented.width() == 2 && oriented.height() == 3 && oriented.depth() == 4,
+          "mildly oblique dimensions changed");
+  require(oriented.voxels() == volume.voxels(), "mildly oblique voxels changed");
+  requireDirectionNear(oriented, direction, "mildly oblique direction changed");
+  requirePointNear(physicalPoint(oriented, 1, 2, 3),
+                   physicalPoint(volume, 1, 2, 3),
+                   "mildly oblique physical point mismatch");
+}
+
+void testInvalidOrientationGeometryIsRejected()
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+
+  qvp::VolumeData::SpatialGeometry unknownGeometry;
+  unknownGeometry.direction = kIdentityDirection;
+  unknownGeometry.coordinateSystem = qvp::VolumeData::CoordinateSystem::Unknown;
+  unknownGeometry.hasOrientation = true;
+  const qvp::VolumeData unknownCoordinateSystem(
+      2, 2, 2, 1.0F, 1.0F, 1.0F, makeRampVolumeFloat({2, 2, 2}), unknownGeometry);
+  requireThrows<std::invalid_argument>(
+      [&unknownCoordinateSystem] {
+        static_cast<void>(maiw::cardiac::normalizeVolumeDataToLps(unknownCoordinateSystem));
+      },
+      "unknown coordinate system should be rejected");
+
+  const std::array<std::array<double, 9>, 6> invalidDirections{
+      std::array<double, 9>{1.0, 0.25, 0.0,
+                            0.0, 1.0, 0.0,
+                            0.0, 0.0, 1.0},
+      std::array<double, 9>{2.0, 0.0, 0.0,
+                            0.0, 1.0, 0.0,
+                            0.0, 0.0, 1.0},
+      std::array<double, 9>{1.0, 0.1, 0.0,
+                            0.0, std::sqrt(0.99), 0.0,
+                            0.0, 0.0, 1.0},
+      std::array<double, 9>{std::sqrt(0.5), -std::sqrt(0.5), 0.0,
+                            std::sqrt(0.5), std::sqrt(0.5), 0.0,
+                            0.0, 0.0, 1.0},
+      std::array<double, 9>{nan, 0.0, 0.0,
+                            0.0, 1.0, 0.0,
+                            0.0, 0.0, 1.0},
+      std::array<double, 9>{infinity, 0.0, 0.0,
+                            0.0, 1.0, 0.0,
+                            0.0, 0.0, 1.0}};
+  for (const auto& direction : invalidDirections)
+  {
+    const qvp::VolumeData invalidVolume =
+        makeQvpVolume({2, 2, 2}, {1.0F, 1.0F, 1.0F}, {0.0, 0.0, 0.0}, direction);
+    requireThrows<std::invalid_argument>(
+        [&invalidVolume] {
+          static_cast<void>(maiw::cardiac::normalizeVolumeDataToLps(invalidVolume));
+        },
+        "invalid orientation direction should be rejected");
+  }
+
+  qvp::VolumeData::SpatialGeometry duplicateGeometry;
+  duplicateGeometry.direction = {1.0, 1.0, 0.0,
+                                 0.0, 0.0, 0.0,
+                                 0.0, 0.0, 1.0};
+  duplicateGeometry.coordinateSystem = qvp::VolumeData::CoordinateSystem::LPS;
+  duplicateGeometry.hasOrientation = true;
+  const qvp::VolumeData duplicateAxes(
+      2, 2, 2, 1.0F, 1.0F, 1.0F, makeRampVolumeFloat({2, 2, 2}), duplicateGeometry);
+  requireThrows<std::invalid_argument>(
+      [&duplicateAxes] {
+        static_cast<void>(maiw::cardiac::normalizeVolumeDataToLps(duplicateAxes));
+      },
+      "duplicate anatomy axes should be rejected");
+
+  const qvp::VolumeData validVolume = maiw::cardiac::normalizeVolumeDataToLps(
+      makeQvpVolume({2, 2, 2}, {1.0F, 1.0F, 1.0F}, {0.0, 0.0, 0.0}, kIdentityDirection));
+  qvp::VolumeData::SpatialGeometry nonFiniteDirectionGeometry = validVolume.spatialGeometry();
+  nonFiniteDirectionGeometry.direction[0] = nan;
+  const qvp::VolumeData nonFiniteDirectionVolume(validVolume.width(),
+                                                 validVolume.height(),
+                                                 validVolume.depth(),
+                                                 validVolume.spacingX(),
+                                                 validVolume.spacingY(),
+                                                 validVolume.spacingZ(),
+                                                 validVolume.voxels(),
+                                                 nonFiniteDirectionGeometry,
+                                                 validVolume.voxelAxisAnatomy());
+  requireThrows<std::invalid_argument>(
+      [&validVolume, &nonFiniteDirectionVolume] {
+        maiw::cardiac::validateLpsOrientedVolumePair(validVolume, nonFiniteDirectionVolume);
+      },
+      "non-finite pair-validation direction should be rejected");
+}
+
 void testInvalidInputs()
 {
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -272,6 +687,15 @@ void testInvalidInputs()
   requireThrows<std::invalid_argument>(
       [] { static_cast<void>(maiw::cardiac::targetSizeForAxis(0, 1.0, 1.0)); },
       "zero source dimension should be rejected");
+  requireThrows<std::invalid_argument>(
+      [nan] {
+        static_cast<void>(maiw::cardiac::normalizeVolumeDataToLps(
+            makeQvpVolume({2, 2, 2},
+                          {1.0F, static_cast<float>(nan), 1.0F},
+                          {0.0, 0.0, 0.0},
+                          kIdentityDirection)));
+      },
+      "NaN VolumeData spacing should be rejected");
   requireThrows<std::invalid_argument>(
       [] { static_cast<void>(maiw::cardiac::targetSizeForAxis(2, 0.0, 1.0)); },
       "zero source spacing should be rejected");
@@ -336,6 +760,16 @@ int main()
     testRejectsNonFiniteCoordinates();
     testSingleVoxelAxisInterpolation();
     testResamplingWithSingleSourceDimension();
+    testAlreadyLpsVolumeRemainsVoxelIdentical();
+    testSingleAxisFlipsToLps();
+    testAxisPermutationWithoutFlip();
+    testPermutationPlusFlip();
+    testXFastestIndexingAfterReorientation();
+    testMultipleAxisFlipsPreservePhysicalLocations();
+    testRasCoordinateSystemIsConvertedToLps();
+    testOrientedPairValidation();
+    testValidMildlyObliqueOrientationIsAccepted();
+    testInvalidOrientationGeometryIsRejected();
     testInvalidInputs();
     std::cout << "Cardiac MRI preprocessing mathematical tests passed." << '\n';
     return 0;

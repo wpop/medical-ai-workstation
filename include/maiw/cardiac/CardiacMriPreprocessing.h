@@ -4,6 +4,11 @@
 #include <span>
 #include <vector>
 
+namespace qvp
+{
+class VolumeData;
+}
+
 namespace maiw::cardiac
 {
 
@@ -104,5 +109,35 @@ std::vector<double> resampleLinearNearestBoundary(const Float64VolumeView& sourc
                                                   VolumeSpacing sourceSpacing,
                                                   VolumeDimensions targetDimensions,
                                                   VolumeSpacing targetSpacing);
+
+/**
+ * @brief Return a copy of a qtviewerpro volume reoriented to voxel-axis LPS order.
+ *
+ * The input coordinate system describes the patient-world coordinate convention
+ * used by origin/direction (for example LPS or RAS). The voxel-axis orientation
+ * describes which anatomical direction is reached when each voxel index
+ * increases. This function first converts trusted RAS geometry into LPS world
+ * coordinates, then applies only voxel permutation and axis reversal so the
+ * output voxel axes increase toward Left, Posterior, and Superior.
+ *
+ * @throws std::invalid_argument If the volume, spacing, or trusted orientation
+ * metadata are invalid or cannot provide a unique 3D anatomical orientation.
+ * @throws std::overflow_error If the output voxel count cannot fit in memory sizes.
+ */
+qvp::VolumeData normalizeVolumeDataToLps(const qvp::VolumeData& volume);
+
+/**
+ * @brief Validate Python-equivalent ED/ES geometry after LPS orientation normalization.
+ *
+ * Both volumes must be voxel-axis LPS in LPS world coordinates and have
+ * exactly matching dimensions and spacing values. Their 3x3 direction-spacing
+ * physical axis matrices are compared with NumPy np.allclose default
+ * semantics. Origins are intentionally not compared because the Python
+ * production preprocessing validates affine[:3, :3] only.
+ *
+ * @throws std::invalid_argument If any Python-equivalent oriented-pair condition fails.
+ */
+void validateLpsOrientedVolumePair(const qvp::VolumeData& edVolume,
+                                   const qvp::VolumeData& esVolume);
 
 } // namespace maiw::cardiac

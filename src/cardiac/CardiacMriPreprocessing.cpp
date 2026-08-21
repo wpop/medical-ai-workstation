@@ -1,13 +1,26 @@
 #include "maiw/cardiac/CardiacMriPreprocessing.h"
 
+#include "qtviewerpro/core/AnatomicalOrientation.h"
+#include "qtviewerpro/core/VolumeData.h"
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace
 {
+
+using Matrix3 = std::array<double, 9>;
+using Vector3 = std::array<double, 3>;
+
+constexpr double kNumpyAllcloseRtol = 1e-5;
+constexpr double kNumpyAllcloseAtol = 1e-8;
+constexpr double kDirectionOrthonormalTolerance = 1e-5;
+constexpr double kDominantAxisTolerance = 1e-5;
 
 void requirePositiveDimension(std::size_t value, const char* name)
 {
@@ -59,6 +72,346 @@ std::size_t checkedMultiply(std::size_t lhs, std::size_t rhs)
 std::size_t checkedElementCount(maiw::cardiac::VolumeDimensions dimensions)
 {
   return checkedMultiply(checkedMultiply(dimensions.width, dimensions.height), dimensions.depth);
+}
+
+std::array<std::size_t, 3> dimensionsArray(const qvp::VolumeData& volume)
+{
+  return {volume.width(), volume.height(), volume.depth()};
+}
+
+std::array<double, 3> spacingArray(const qvp::VolumeData& volume)
+{
+  return {static_cast<double>(volume.spacingX()),
+          static_cast<double>(volume.spacingY()),
+          static_cast<double>(volume.spacingZ())};
+}
+
+maiw::cardiac::VolumeDimensions volumeDimensions(const qvp::VolumeData& volume)
+{
+  return maiw::cardiac::VolumeDimensions{volume.width(), volume.height(), volume.depth()};
+}
+
+void requireValidVolumeData(const qvp::VolumeData& volume, const char* name)
+{
+  if (!volume.isValid())
+  {
+    throw std::invalid_argument(std::string(name) + " must be non-empty and internally valid");
+  }
+  requireValidDimensions(volumeDimensions(volume));
+  requirePositiveFiniteSpacing(static_cast<double>(volume.spacingX()), "spacing.x");
+  requirePositiveFiniteSpacing(static_cast<double>(volume.spacingY()), "spacing.y");
+  requirePositiveFiniteSpacing(static_cast<double>(volume.spacingZ()), "spacing.z");
+}
+
+std::size_t voxelIndex(std::array<std::size_t, 3> dimensions,
+                       std::size_t x,
+                       std::size_t y,
+                       std::size_t z)
+{
+  return (z * dimensions[1] * dimensions[0]) + (y * dimensions[0]) + x;
+}
+
+struct LpsGeometry
+{
+  Vector3 origin{};
+  Matrix3 direction{};
+};
+
+LpsGeometry lpsGeometryFromVolume(const qvp::VolumeData& volume)
+{
+  const auto& geometry = volume.spatialGeometry();
+  if (!geometry.hasOrientation)
+  {
+    throw std::invalid_argument("Volume must have trusted spatial orientation");
+  }
+
+  Vector3 rowScale{1.0, 1.0, 1.0};
+  switch (geometry.coordinateSystem)
+  {
+  case qvp::VolumeData::CoordinateSystem::LPS:
+    break;
+  case qvp::VolumeData::CoordinateSystem::RAS:
+    rowScale = {-1.0, -1.0, 1.0};
+    break;
+  case qvp::VolumeData::CoordinateSystem::Unknown:
+    throw std::invalid_argument("Volume coordinate system must be LPS or RAS");
+  }
+
+  LpsGeometry lpsGeometry;
+  for (std::size_t row = 0; row < 3; ++row)
+  {
+    const double originValue = geometry.origin[row];
+    if (!std::isfinite(originValue))
+    {
+      throw std::invalid_argument("Volume origin must be finite");
+    }
+    lpsGeometry.origin[row] = originValue * rowScale[row];
+
+    for (std::size_t column = 0; column < 3; ++column)
+    {
+      const double directionValue = geometry.direction[(row * 3) + column];
+      if (!std::isfinite(directionValue))
+      {
+        throw std::invalid_argument("Volume direction must be finite");
+      }
+      lpsGeometry.direction[(row * 3) + column] = directionValue * rowScale[row];
+    }
+  }
+
+  return lpsGeometry;
+}
+
+struct AxisAnatomy
+{
+  std::size_t worldAxis = 0;
+  bool positive = true;
+};
+
+double directionValue(const Matrix3& direction, std::size_t row, std::size_t column)
+{
+  return direction[(row * 3) + column];
+}
+
+double columnDotProduct(const Matrix3& direction, std::size_t lhsColumn, std::size_t rhsColumn)
+{
+  double sum = 0.0;
+  for (std::size_t row = 0; row < 3; ++row)
+  {
+    sum += directionValue(direction, row, lhsColumn) *
+           directionValue(direction, row, rhsColumn);
+  }
+  return sum;
+}
+
+void requireSupportedDirectionMatrix(const Matrix3& direction)
+{
+  for (std::size_t column = 0; column < 3; ++column)
+  {
+    const double norm = std::sqrt(columnDotProduct(direction, column, column));
+    if (std::fabs(norm - 1.0) > kDirectionOrthonormalTolerance)
+    {
+      throw std::invalid_argument("Volume direction columns must have unit norm");
+    }
+  }
+
+  for (std::size_t lhsColumn = 0; lhsColumn < 3; ++lhsColumn)
+  {
+    for (std::size_t rhsColumn = lhsColumn + 1U; rhsColumn < 3; ++rhsColumn)
+    {
+      if (std::fabs(columnDotProduct(direction, lhsColumn, rhsColumn)) >
+          kDirectionOrthonormalTolerance)
+      {
+        throw std::invalid_argument("Volume direction columns must be mutually orthogonal");
+      }
+    }
+  }
+}
+
+AxisAnatomy anatomyForSourceAxis(const Matrix3& direction, std::size_t sourceAxis)
+{
+  std::size_t bestWorldAxis = 0;
+  double bestMagnitude = -1.0;
+  double secondBestMagnitude = -1.0;
+  for (std::size_t worldAxis = 0; worldAxis < 3; ++worldAxis)
+  {
+    const double magnitude = std::fabs(directionValue(direction, worldAxis, sourceAxis));
+    if (magnitude > bestMagnitude)
+    {
+      secondBestMagnitude = bestMagnitude;
+      bestMagnitude = magnitude;
+      bestWorldAxis = worldAxis;
+    }
+    else if (magnitude > secondBestMagnitude)
+    {
+      secondBestMagnitude = magnitude;
+    }
+  }
+
+  if (bestMagnitude <= 0.0)
+  {
+    throw std::invalid_argument("Volume direction must provide non-zero orientation axes");
+  }
+  if (bestMagnitude - secondBestMagnitude <= kDominantAxisTolerance)
+  {
+    throw std::invalid_argument("Volume direction has ambiguous voxel-axis anatomy");
+  }
+
+  const double signedDirection = directionValue(direction, bestWorldAxis, sourceAxis);
+  return AxisAnatomy{bestWorldAxis, signedDirection > 0.0};
+}
+
+struct AxisTransform
+{
+  std::size_t sourceAxis = 0;
+  bool flip = false;
+};
+
+std::array<AxisTransform, 3> targetToSourceTransform(const Matrix3& direction)
+{
+  requireSupportedDirectionMatrix(direction);
+
+  std::array<AxisTransform, 3> transform{};
+  std::array<bool, 3> hasTargetAxis{false, false, false};
+
+  for (std::size_t sourceAxis = 0; sourceAxis < 3; ++sourceAxis)
+  {
+    const AxisAnatomy anatomy = anatomyForSourceAxis(direction, sourceAxis);
+    if (hasTargetAxis[anatomy.worldAxis])
+    {
+      throw std::invalid_argument("Volume direction must map voxel axes to unique anatomy axes");
+    }
+    hasTargetAxis[anatomy.worldAxis] = true;
+    transform[anatomy.worldAxis] = AxisTransform{sourceAxis, !anatomy.positive};
+  }
+
+  return transform;
+}
+
+bool transformIsAlreadyLps(const std::array<AxisTransform, 3>& transform)
+{
+  for (std::size_t axis = 0; axis < 3; ++axis)
+  {
+    if (transform[axis].sourceAxis != axis || transform[axis].flip)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::array<float, 3> transformedSpacing(const std::array<double, 3>& sourceSpacing,
+                                        const std::array<AxisTransform, 3>& transform)
+{
+  return {static_cast<float>(sourceSpacing[transform[0].sourceAxis]),
+          static_cast<float>(sourceSpacing[transform[1].sourceAxis]),
+          static_cast<float>(sourceSpacing[transform[2].sourceAxis])};
+}
+
+std::array<std::size_t, 3> transformedDimensions(const std::array<std::size_t, 3>& sourceDimensions,
+                                                 const std::array<AxisTransform, 3>& transform)
+{
+  return {sourceDimensions[transform[0].sourceAxis],
+          sourceDimensions[transform[1].sourceAxis],
+          sourceDimensions[transform[2].sourceAxis]};
+}
+
+qvp::VolumeData::SpatialGeometry transformedSpatialGeometry(
+    const LpsGeometry& sourceGeometry,
+    const std::array<double, 3>& sourceSpacing,
+    const std::array<std::size_t, 3>& sourceDimensions,
+    const std::array<AxisTransform, 3>& transform)
+{
+  qvp::VolumeData::SpatialGeometry outputGeometry;
+  outputGeometry.origin = sourceGeometry.origin;
+  outputGeometry.direction = {};
+  outputGeometry.coordinateSystem = qvp::VolumeData::CoordinateSystem::LPS;
+  outputGeometry.hasOrientation = true;
+
+  for (std::size_t targetAxis = 0; targetAxis < 3; ++targetAxis)
+  {
+    const AxisTransform axisTransform = transform[targetAxis];
+    const double axisSign = axisTransform.flip ? -1.0 : 1.0;
+
+    if (axisTransform.flip)
+    {
+      const double offset =
+          static_cast<double>(sourceDimensions[axisTransform.sourceAxis] - 1U) *
+          sourceSpacing[axisTransform.sourceAxis];
+      for (std::size_t row = 0; row < 3; ++row)
+      {
+        outputGeometry.origin[row] +=
+            sourceGeometry.direction[(row * 3) + axisTransform.sourceAxis] * offset;
+      }
+    }
+
+    for (std::size_t row = 0; row < 3; ++row)
+    {
+      outputGeometry.direction[(row * 3) + targetAxis] =
+          sourceGeometry.direction[(row * 3) + axisTransform.sourceAxis] * axisSign;
+    }
+  }
+
+  return outputGeometry;
+}
+
+std::array<std::size_t, 3> sourceIndexForTargetIndex(
+    std::array<std::size_t, 3> targetIndex,
+    std::array<std::size_t, 3> sourceDimensions,
+    const std::array<AxisTransform, 3>& transform)
+{
+  std::array<std::size_t, 3> sourceIndex{};
+  for (std::size_t targetAxis = 0; targetAxis < 3; ++targetAxis)
+  {
+    const AxisTransform axisTransform = transform[targetAxis];
+    std::size_t coordinate = targetIndex[targetAxis];
+    if (axisTransform.flip)
+    {
+      coordinate = sourceDimensions[axisTransform.sourceAxis] - 1U - coordinate;
+    }
+    sourceIndex[axisTransform.sourceAxis] = coordinate;
+  }
+  return sourceIndex;
+}
+
+qvp::VoxelAxisAnatomy lpsVoxelAxisAnatomy()
+{
+  return qvp::VoxelAxisAnatomy{
+      qvp::AnatomicalDirection::Left,
+      qvp::AnatomicalDirection::Posterior,
+      qvp::AnatomicalDirection::Superior};
+}
+
+bool spacingEqualExactly(const qvp::VolumeData& lhs, const qvp::VolumeData& rhs, std::size_t axis)
+{
+  switch (axis)
+  {
+  case 0:
+    return lhs.spacingX() == rhs.spacingX();
+  case 1:
+    return lhs.spacingY() == rhs.spacingY();
+  case 2:
+    return lhs.spacingZ() == rhs.spacingZ();
+  default:
+    throw std::invalid_argument("Spacing axis must be 0, 1, or 2");
+  }
+}
+
+Matrix3 physicalAxisMatrix(const qvp::VolumeData& volume)
+{
+  const auto& direction = volume.spatialGeometry().direction;
+  const auto spacing = spacingArray(volume);
+  Matrix3 matrix{};
+  for (std::size_t column = 0; column < 3; ++column)
+  {
+    for (std::size_t row = 0; row < 3; ++row)
+    {
+      matrix[(row * 3) + column] = directionValue(direction, row, column) * spacing[column];
+    }
+  }
+  return matrix;
+}
+
+bool allclose(double lhs, double rhs)
+{
+  if (!std::isfinite(lhs) || !std::isfinite(rhs))
+  {
+    return false;
+  }
+  return std::fabs(lhs - rhs) <= (kNumpyAllcloseAtol + (kNumpyAllcloseRtol * std::fabs(rhs)));
+}
+
+void requireLpsOrientedVolume(const qvp::VolumeData& volume, const char* name)
+{
+  requireValidVolumeData(volume, name);
+  const LpsGeometry lpsGeometry = lpsGeometryFromVolume(volume);
+  if (volume.spatialGeometry().coordinateSystem != qvp::VolumeData::CoordinateSystem::LPS)
+  {
+    throw std::invalid_argument(std::string(name) + " must use LPS world coordinates");
+  }
+  if (!transformIsAlreadyLps(targetToSourceTransform(lpsGeometry.direction)))
+  {
+    throw std::invalid_argument(std::string(name) + " voxel axes must be LPS oriented");
+  }
 }
 
 double clampCoordinate(double coordinate, std::size_t size)
@@ -258,6 +611,78 @@ std::vector<double> resampleLinearNearestBoundary(const Float64VolumeView& sourc
   }
 
   return output;
+}
+
+qvp::VolumeData normalizeVolumeDataToLps(const qvp::VolumeData& volume)
+{
+  requireValidVolumeData(volume, "volume");
+  const std::array<std::size_t, 3> sourceDimensions = dimensionsArray(volume);
+  const std::array<double, 3> sourceSpacing = spacingArray(volume);
+  const LpsGeometry lpsGeometry = lpsGeometryFromVolume(volume);
+  const std::array<AxisTransform, 3> transform = targetToSourceTransform(lpsGeometry.direction);
+  const std::array<std::size_t, 3> targetDimensions =
+      transformedDimensions(sourceDimensions, transform);
+  const std::array<float, 3> targetSpacing = transformedSpacing(sourceSpacing, transform);
+  const qvp::VolumeData::SpatialGeometry targetGeometry =
+      transformedSpatialGeometry(lpsGeometry, sourceSpacing, sourceDimensions, transform);
+
+  std::vector<float> orientedVoxels(checkedMultiply(
+      checkedMultiply(targetDimensions[0], targetDimensions[1]), targetDimensions[2]));
+  const auto& sourceVoxels = volume.voxels();
+  for (std::size_t z = 0; z < targetDimensions[2]; ++z)
+  {
+    for (std::size_t y = 0; y < targetDimensions[1]; ++y)
+    {
+      for (std::size_t x = 0; x < targetDimensions[0]; ++x)
+      {
+        const std::array<std::size_t, 3> sourceIndex =
+            sourceIndexForTargetIndex({x, y, z}, sourceDimensions, transform);
+        orientedVoxels[voxelIndex(targetDimensions, x, y, z)] =
+            sourceVoxels[voxelIndex(sourceDimensions, sourceIndex[0], sourceIndex[1], sourceIndex[2])];
+      }
+    }
+  }
+
+  return qvp::VolumeData(targetDimensions[0],
+                         targetDimensions[1],
+                         targetDimensions[2],
+                         targetSpacing[0],
+                         targetSpacing[1],
+                         targetSpacing[2],
+                         std::move(orientedVoxels),
+                         targetGeometry,
+                         lpsVoxelAxisAnatomy());
+}
+
+void validateLpsOrientedVolumePair(const qvp::VolumeData& edVolume,
+                                   const qvp::VolumeData& esVolume)
+{
+  requireLpsOrientedVolume(edVolume, "ED volume");
+  requireLpsOrientedVolume(esVolume, "ES volume");
+
+  if (edVolume.width() != esVolume.width() || edVolume.height() != esVolume.height() ||
+      edVolume.depth() != esVolume.depth())
+  {
+    throw std::invalid_argument("ED/ES oriented shape mismatch");
+  }
+
+  for (std::size_t axis = 0; axis < 3; ++axis)
+  {
+    if (!spacingEqualExactly(edVolume, esVolume, axis))
+    {
+      throw std::invalid_argument("ED/ES oriented spacing mismatch");
+    }
+  }
+
+  const Matrix3 edPhysicalAxisMatrix = physicalAxisMatrix(edVolume);
+  const Matrix3 esPhysicalAxisMatrix = physicalAxisMatrix(esVolume);
+  for (std::size_t index = 0; index < edPhysicalAxisMatrix.size(); ++index)
+  {
+    if (!allclose(edPhysicalAxisMatrix[index], esPhysicalAxisMatrix[index]))
+    {
+      throw std::invalid_argument("ED/ES oriented affine matrix mismatch");
+    }
+  }
 }
 
 } // namespace maiw::cardiac
