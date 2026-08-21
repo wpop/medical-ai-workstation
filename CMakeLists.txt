@@ -106,6 +106,24 @@ set_target_properties(
 
 find_package(nlohmann_json REQUIRED)
 
+add_library(maiw-cardiac-preprocessing
+    src/cardiac/CardiacMriPreprocessing.cpp
+)
+
+target_include_directories(maiw-cardiac-preprocessing
+    PUBLIC
+        include
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(maiw-cardiac-preprocessing
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_library(maiw-onnx-runtime
     src/onnx/OnnxRuntimeSession.cpp
 )
@@ -130,6 +148,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(BUILD_TESTING)
+    add_executable(test-cardiac-mri-preprocessing
+        tests/cardiac/TestCardiacMriPreprocessing.cpp
+    )
+
+    target_link_libraries(test-cardiac-mri-preprocessing
+        PRIVATE
+            maiw-cardiac-preprocessing
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test-cardiac-mri-preprocessing
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    add_test(
+        NAME cardiac-mri-preprocessing-math
+        COMMAND test-cardiac-mri-preprocessing
+    )
+
     if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         add_executable(test-qt-viewer-pro-dependency
             tests/integration/TestQtViewerProDependency.cpp
