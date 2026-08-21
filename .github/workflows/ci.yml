@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  ubuntu:
+    name: Ubuntu CMake
+    runs-on: ubuntu-latest
+
+    env:
+      ONNXRUNTIME_VERSION: 1.29.0
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            nlohmann-json3-dev
+
+      - name: Install ONNX Runtime
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.deps/onnxruntime"
+          curl -fsSL \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz" \
+            -o /tmp/onnxruntime.tgz
+          tar -xzf /tmp/onnxruntime.tgz \
+            --strip-components=1 \
+            -C "${GITHUB_WORKSPACE}/.deps/onnxruntime"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT="${GITHUB_WORKSPACE}/.deps/onnxruntime" \
+            -DMAIW_ENABLE_QTVIEWERPRO_INTEGRATION=OFF \
+            -DMAIW_CARDIAC_MRI_PACKAGE_DIR="" \
+            -DMAIW_CARDIAC_MRI_REAL_ED_PATH="" \
+            -DMAIW_CARDIAC_MRI_REAL_ES_PATH=""
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
