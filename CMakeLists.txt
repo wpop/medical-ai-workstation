@@ -15,6 +15,8 @@ include(CTest)
 
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime C++ distribution")
 set(MAIW_CARDIAC_MRI_PACKAGE_DIR "" CACHE PATH "External cardiac MRI deployment package root")
+set(MAIW_CARDIAC_MRI_REAL_ED_PATH "" CACHE FILEPATH "Optional real standalone ED volume for cardiac preprocessing smoke testing")
+set(MAIW_CARDIAC_MRI_REAL_ES_PATH "" CACHE FILEPATH "Optional real standalone ES volume for cardiac preprocessing smoke testing")
 set(MAIW_QTVIEWERPRO_SOURCE_DIR "" CACHE PATH "Local qt-viewer-pro source directory")
 option(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION "Enable local qt-viewer-pro core/IO source integration" OFF)
 
@@ -106,6 +108,31 @@ set_target_properties(
 
 find_package(nlohmann_json REQUIRED)
 
+if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+    add_library(maiw-cardiac-preprocessing
+        src/cardiac/CardiacMriPreprocessing.cpp
+    )
+
+    target_include_directories(maiw-cardiac-preprocessing
+        PUBLIC
+            include
+    )
+
+    target_link_libraries(maiw-cardiac-preprocessing
+        PUBLIC
+            qt-viewer-pro-core
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(maiw-cardiac-preprocessing
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+endif()
+
 add_library(maiw-onnx-runtime
     src/onnx/OnnxRuntimeSession.cpp
 )
@@ -130,6 +157,66 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(BUILD_TESTING)
+    if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+        add_executable(test-cardiac-mri-preprocessing
+            tests/cardiac/TestCardiacMriPreprocessing.cpp
+        )
+
+        target_link_libraries(test-cardiac-mri-preprocessing
+            PRIVATE
+                maiw-cardiac-preprocessing
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-cardiac-mri-preprocessing
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME cardiac-mri-preprocessing-math
+            COMMAND test-cardiac-mri-preprocessing
+        )
+
+        if(MAIW_CARDIAC_MRI_REAL_ED_PATH AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
+            add_executable(test-cardiac-mri-preprocessor-real-smoke
+                tests/cardiac/TestCardiacMriPreprocessorRealSmoke.cpp
+            )
+
+            target_link_libraries(test-cardiac-mri-preprocessor-real-smoke
+                PRIVATE
+                    maiw-cardiac-preprocessing
+                    qt-viewer-pro-io
+                    Qt6::Core
+            )
+
+            target_compile_definitions(test-cardiac-mri-preprocessor-real-smoke
+                PRIVATE
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                    MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-preprocessor-real-smoke
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            add_test(
+                NAME cardiac-mri-preprocessor-real-smoke
+                COMMAND test-cardiac-mri-preprocessor-real-smoke
+            )
+        else()
+            message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH/ES_PATH are not set; cardiac real preprocessing smoke test disabled")
+        endif()
+    endif()
+
     if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         add_executable(test-qt-viewer-pro-dependency
             tests/integration/TestQtViewerProDependency.cpp
