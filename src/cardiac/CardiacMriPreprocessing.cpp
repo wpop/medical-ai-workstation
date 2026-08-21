@@ -16,6 +16,10 @@ namespace
 
 using Matrix3 = std::array<double, 9>;
 using Vector3 = std::array<double, 3>;
+using maiw::cardiac::CardiacMriPreprocessingConfig;
+using maiw::cardiac::Float64VolumeView;
+using maiw::cardiac::VolumeDimensions;
+using maiw::cardiac::VolumeSpacing;
 
 constexpr double kNumpyAllcloseRtol = 1e-5;
 constexpr double kNumpyAllcloseAtol = 1e-8;
@@ -113,6 +117,14 @@ std::size_t voxelIndex(std::array<std::size_t, 3> dimensions,
 
 struct LpsGeometry
 {
+  Vector3 origin{};
+  Matrix3 direction{};
+};
+
+struct DestinationGrid
+{
+  maiw::cardiac::VolumeDimensions dimensions{};
+  maiw::cardiac::VolumeSpacing spacing{};
   Vector3 origin{};
   Matrix3 direction{};
 };
@@ -389,6 +401,149 @@ Matrix3 physicalAxisMatrix(const qvp::VolumeData& volume)
     }
   }
   return matrix;
+}
+
+void requireLpsOrientedVolume(const qvp::VolumeData& volume, const char* name);
+
+Vector3 physicalPoint(Vector3 origin,
+                      const Matrix3& direction,
+                      maiw::cardiac::VolumeSpacing spacing,
+                      double x,
+                      double y,
+                      double z)
+{
+  const Vector3 scaled{x * spacing.x, y * spacing.y, z * spacing.z};
+  return {origin[0] + (directionValue(direction, 0, 0) * scaled[0]) +
+              (directionValue(direction, 0, 1) * scaled[1]) +
+              (directionValue(direction, 0, 2) * scaled[2]),
+          origin[1] + (directionValue(direction, 1, 0) * scaled[0]) +
+              (directionValue(direction, 1, 1) * scaled[1]) +
+              (directionValue(direction, 1, 2) * scaled[2]),
+          origin[2] + (directionValue(direction, 2, 0) * scaled[0]) +
+              (directionValue(direction, 2, 1) * scaled[1]) +
+              (directionValue(direction, 2, 2) * scaled[2])};
+}
+
+DestinationGrid deriveEdDestinationGrid(const qvp::VolumeData& edVolume)
+{
+  requireLpsOrientedVolume(edVolume, "ED volume");
+
+  const VolumeDimensions sourceDimensions = volumeDimensions(edVolume);
+  const VolumeSpacing sourceSpacing{static_cast<double>(edVolume.spacingX()),
+                                    static_cast<double>(edVolume.spacingY()),
+                                    static_cast<double>(edVolume.spacingZ())};
+  const CardiacMriPreprocessingConfig config = maiw::cardiac::frozenCardiacMriPreprocessingConfig();
+  const VolumeSpacing targetSpacing = config.targetSpacingXyz;
+  const VolumeDimensions targetDimensions{
+      maiw::cardiac::targetSizeForAxis(sourceDimensions.width, sourceSpacing.x, targetSpacing.x),
+      maiw::cardiac::targetSizeForAxis(sourceDimensions.height, sourceSpacing.y, targetSpacing.y),
+      maiw::cardiac::targetSizeForAxis(sourceDimensions.depth, sourceSpacing.z, targetSpacing.z)};
+
+  const auto& edGeometry = edVolume.spatialGeometry();
+  const Vector3 sourceIndexCenter{(static_cast<double>(sourceDimensions.width) - 1.0) / 2.0,
+                                  (static_cast<double>(sourceDimensions.height) - 1.0) / 2.0,
+                                  (static_cast<double>(sourceDimensions.depth) - 1.0) / 2.0};
+  const Vector3 targetIndexCenter{(static_cast<double>(targetDimensions.width) - 1.0) / 2.0,
+                                  (static_cast<double>(targetDimensions.height) - 1.0) / 2.0,
+                                  (static_cast<double>(targetDimensions.depth) - 1.0) / 2.0};
+  const Vector3 sourcePhysicalCenter = physicalPoint(edGeometry.origin,
+                                                     edGeometry.direction,
+                                                     sourceSpacing,
+                                                     sourceIndexCenter[0],
+                                                     sourceIndexCenter[1],
+                                                     sourceIndexCenter[2]);
+  const Vector3 targetCenterOffset = physicalPoint(Vector3{0.0, 0.0, 0.0},
+                                                   edGeometry.direction,
+                                                   targetSpacing,
+                                                   targetIndexCenter[0],
+                                                   targetIndexCenter[1],
+                                                   targetIndexCenter[2]);
+
+  DestinationGrid grid;
+  grid.dimensions = targetDimensions;
+  grid.spacing = targetSpacing;
+  grid.direction = edGeometry.direction;
+  grid.origin = {sourcePhysicalCenter[0] - targetCenterOffset[0],
+                 sourcePhysicalCenter[1] - targetCenterOffset[1],
+                 sourcePhysicalCenter[2] - targetCenterOffset[2]};
+  return grid;
+}
+
+std::vector<double> volumeVoxelsAsDouble(const qvp::VolumeData& volume)
+{
+  std::vector<double> values;
+  values.reserve(volume.voxels().size());
+  for (const float value : volume.voxels())
+  {
+    values.push_back(static_cast<double>(value));
+  }
+  return values;
+}
+
+maiw::cardiac::CardiacMriXyzVolume resampleToGrid(const qvp::VolumeData& volume,
+                                                  const DestinationGrid& grid,
+                                                  VolumeDimensions sourceDimensions,
+                                                  VolumeSpacing sourceSpacing)
+{
+  const std::vector<double> sourceVoxels = volumeVoxelsAsDouble(volume);
+  std::vector<double> outputVoxels = maiw::cardiac::resampleLinearNearestBoundary(
+      Float64VolumeView{sourceDimensions, sourceVoxels},
+      sourceSpacing,
+      grid.dimensions,
+      grid.spacing);
+
+  maiw::cardiac::CardiacMriXyzVolume output;
+  output.dimensions = grid.dimensions;
+  output.spacing = grid.spacing;
+  output.origin = grid.origin;
+  output.direction = grid.direction;
+  output.voxels = std::move(outputVoxels);
+  return output;
+}
+
+void requireValidXyzVolume(const maiw::cardiac::CardiacMriXyzVolume& volume, const char* name)
+{
+  requireValidDimensions(volume.dimensions);
+  requireValidSpacing(volume.spacing);
+  for (std::size_t axis = 0; axis < 3; ++axis)
+  {
+    if (!std::isfinite(volume.origin[axis]))
+    {
+      throw std::invalid_argument(std::string(name) + " origin must be finite");
+    }
+  }
+  for (const double value : volume.direction)
+  {
+    if (!std::isfinite(value))
+    {
+      throw std::invalid_argument(std::string(name) + " direction must be finite");
+    }
+  }
+  if (volume.voxels.size() != checkedElementCount(volume.dimensions))
+  {
+    throw std::invalid_argument(std::string(name) + " voxel count does not match dimensions");
+  }
+}
+
+bool equalVolumeSpacing(maiw::cardiac::VolumeSpacing lhs, maiw::cardiac::VolumeSpacing rhs)
+{
+  return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+}
+
+void requireMatchingXyzGeometry(const maiw::cardiac::CardiacMriXyzVolume& edVolume,
+                                const maiw::cardiac::CardiacMriXyzVolume& esVolume)
+{
+  if (edVolume.dimensions.width != esVolume.dimensions.width ||
+      edVolume.dimensions.height != esVolume.dimensions.height ||
+      edVolume.dimensions.depth != esVolume.dimensions.depth)
+  {
+    throw std::invalid_argument("ED/ES resampled shape mismatch");
+  }
+  if (!equalVolumeSpacing(edVolume.spacing, esVolume.spacing) ||
+      edVolume.origin != esVolume.origin || edVolume.direction != esVolume.direction)
+  {
+    throw std::invalid_argument("ED/ES resampled destination geometry mismatch");
+  }
 }
 
 bool allclose(double lhs, double rhs)
@@ -683,6 +838,99 @@ void validateLpsOrientedVolumePair(const qvp::VolumeData& edVolume,
       throw std::invalid_argument("ED/ES oriented affine matrix mismatch");
     }
   }
+}
+
+CardiacMriXyzVolumePair resampleOrientedPairToEdDerivedGrid(
+    const qvp::VolumeData& edVolume,
+    const qvp::VolumeData& esVolume)
+{
+  validateLpsOrientedVolumePair(edVolume, esVolume);
+
+  const DestinationGrid grid = deriveEdDestinationGrid(edVolume);
+  const VolumeDimensions sourceDimensions = volumeDimensions(edVolume);
+  const VolumeSpacing sourceSpacing{static_cast<double>(edVolume.spacingX()),
+                                    static_cast<double>(edVolume.spacingY()),
+                                    static_cast<double>(edVolume.spacingZ())};
+
+  return CardiacMriXyzVolumePair{resampleToGrid(edVolume, grid, sourceDimensions, sourceSpacing),
+                                 resampleToGrid(esVolume, grid, sourceDimensions, sourceSpacing)};
+}
+
+XyCropWindow deriveFrozenXyCenterCropWindow(const CardiacMriXyzVolume& volume)
+{
+  requireValidXyzVolume(volume, "volume");
+  const CardiacMriPreprocessingConfig config = frozenCardiacMriPreprocessingConfig();
+  const std::size_t targetWidth = config.finalTensorShapeDhw.width;
+  const std::size_t targetHeight = config.finalTensorShapeDhw.height;
+
+  if (volume.dimensions.width < targetWidth || volume.dimensions.height < targetHeight)
+  {
+    throw std::invalid_argument("XY padding would be required for frozen crop");
+  }
+
+  const std::size_t excessX = volume.dimensions.width - targetWidth;
+  const std::size_t excessY = volume.dimensions.height - targetHeight;
+  const std::size_t startX = excessX / 2U;
+  const std::size_t startY = excessY / 2U;
+  return XyCropWindow{startX, startY, startX + targetWidth, startY + targetHeight};
+}
+
+CardiacMriXyzVolume cropVolumeToWindow(const CardiacMriXyzVolume& volume,
+                                       XyCropWindow window)
+{
+  requireValidXyzVolume(volume, "volume");
+  if (window.endX <= window.startX || window.endY <= window.startY ||
+      window.endX > volume.dimensions.width || window.endY > volume.dimensions.height)
+  {
+    throw std::invalid_argument("Crop window must be non-empty and inside the source volume");
+  }
+
+  const VolumeDimensions croppedDimensions{
+      window.endX - window.startX,
+      window.endY - window.startY,
+      volume.dimensions.depth};
+  std::vector<double> croppedVoxels(checkedElementCount(croppedDimensions));
+
+  for (std::size_t z = 0; z < croppedDimensions.depth; ++z)
+  {
+    for (std::size_t y = 0; y < croppedDimensions.height; ++y)
+    {
+      for (std::size_t x = 0; x < croppedDimensions.width; ++x)
+      {
+        croppedVoxels[voxelIndex(croppedDimensions, x, y, z)] =
+            volume.voxels[voxelIndex(volume.dimensions,
+                                     window.startX + x,
+                                     window.startY + y,
+                                     z)];
+      }
+    }
+  }
+
+  CardiacMriXyzVolume cropped;
+  cropped.dimensions = croppedDimensions;
+  cropped.spacing = volume.spacing;
+  cropped.origin = physicalPoint(volume.origin,
+                                 volume.direction,
+                                 volume.spacing,
+                                 static_cast<double>(window.startX),
+                                 static_cast<double>(window.startY),
+                                 0.0);
+  cropped.direction = volume.direction;
+  cropped.voxels = std::move(croppedVoxels);
+  return cropped;
+}
+
+CardiacMriXyzVolumePair cropResampledPairToFrozenXy(
+    const CardiacMriXyzVolume& edVolume,
+    const CardiacMriXyzVolume& esVolume)
+{
+  requireValidXyzVolume(edVolume, "ED volume");
+  requireValidXyzVolume(esVolume, "ES volume");
+  requireMatchingXyzGeometry(edVolume, esVolume);
+
+  const XyCropWindow window = deriveFrozenXyCenterCropWindow(edVolume);
+  return CardiacMriXyzVolumePair{cropVolumeToWindow(edVolume, window),
+                                 cropVolumeToWindow(esVolume, window)};
 }
 
 } // namespace maiw::cardiac

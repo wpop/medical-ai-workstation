@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -58,6 +59,44 @@ struct Float64VolumeView
 {
   VolumeDimensions dimensions;
   std::span<const double> voxels;
+};
+
+/**
+ * @brief Dense double-precision XYZ cardiac MRI volume with LPS physical geometry.
+ *
+ * The voxel buffer is X-fastest and intentionally remains float64 between
+ * resampling and later intensity normalization to match the Python
+ * preprocessing pipeline.
+ */
+struct CardiacMriXyzVolume
+{
+  VolumeDimensions dimensions;
+  VolumeSpacing spacing;
+  std::array<double, 3> origin{0.0, 0.0, 0.0};
+  std::array<double, 9> direction{1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0};
+  std::vector<double> voxels;
+};
+
+/**
+ * @brief ED/ES pair of cardiac MRI XYZ volumes.
+ */
+struct CardiacMriXyzVolumePair
+{
+  CardiacMriXyzVolume ed;
+  CardiacMriXyzVolume es;
+};
+
+/**
+ * @brief Shared XY crop window in XYZ coordinates.
+ */
+struct XyCropWindow
+{
+  std::size_t startX = 0;
+  std::size_t startY = 0;
+  std::size_t endX = 0;
+  std::size_t endY = 0;
 };
 
 /**
@@ -139,5 +178,58 @@ qvp::VolumeData normalizeVolumeDataToLps(const qvp::VolumeData& volume);
  */
 void validateLpsOrientedVolumePair(const qvp::VolumeData& edVolume,
                                    const qvp::VolumeData& esVolume);
+
+/**
+ * @brief Resample oriented ED/ES volumes onto one ED-derived frozen physical grid.
+ *
+ * The pair is validated with the Python-equivalent oriented-pair contract before
+ * any resampling. Target dimensions, target spacing, origin, and direction are
+ * derived from ED only and reused for ES. Voxel values are converted from
+ * VolumeData float storage to double before interpolation and the outputs keep
+ * double storage for parity with Python's float64 resampling stage.
+ *
+ * @throws std::invalid_argument If oriented-pair validation or volume metadata validation fails.
+ * @throws std::overflow_error If an intermediate or output element count cannot fit in memory sizes.
+ */
+CardiacMriXyzVolumePair resampleOrientedPairToEdDerivedGrid(
+    const qvp::VolumeData& edVolume,
+    const qvp::VolumeData& esVolume);
+
+/**
+ * @brief Derive the frozen 144 x 144 geometric FOV-center crop window from one XYZ volume.
+ *
+ * The crop is centered with integer floor division: odd excess removes
+ * floor(diff / 2) voxels from the lower-index side and the remainder from the
+ * upper-index side. Z is not cropped.
+ *
+ * @throws std::invalid_argument If the source XY extent is smaller than the frozen target.
+ */
+XyCropWindow deriveFrozenXyCenterCropWindow(const CardiacMriXyzVolume& volume);
+
+/**
+ * @brief Apply an XY crop window to one double-precision XYZ volume.
+ *
+ * Spacing and direction are preserved. Origin is updated to the physical
+ * location of the retained source voxel at (window.startX, window.startY, 0).
+ *
+ * @throws std::invalid_argument If the volume or crop window is invalid.
+ * @throws std::overflow_error If the cropped output element count cannot fit in memory sizes.
+ */
+CardiacMriXyzVolume cropVolumeToWindow(const CardiacMriXyzVolume& volume,
+                                       XyCropWindow window);
+
+/**
+ * @brief Derive one frozen ED XY crop window and apply it to both ED and ES.
+ *
+ * ED and ES must already share the same resampled dimensions and physical
+ * destination geometry. The returned cropped volumes share the same updated
+ * geometry.
+ *
+ * @throws std::invalid_argument If the pair geometry or crop window is invalid.
+ * @throws std::overflow_error If a cropped output element count cannot fit in memory sizes.
+ */
+CardiacMriXyzVolumePair cropResampledPairToFrozenXy(
+    const CardiacMriXyzVolume& edVolume,
+    const CardiacMriXyzVolume& esVolume);
 
 } // namespace maiw::cardiac
