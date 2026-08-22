@@ -3,7 +3,9 @@
 #include "qtviewerpro/core/VolumeData.h"
 
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -45,6 +47,34 @@ void requireNear(double actual, double expected, const std::string& message)
 void requireNearTolerance(double actual, double expected, double tolerance, const std::string& message)
 {
   if (std::fabs(actual - expected) > tolerance)
+  {
+    throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", actual " +
+                             std::to_string(actual));
+  }
+}
+
+double doubleFromBits(std::uint64_t bits)
+{
+  return std::bit_cast<double>(bits);
+}
+
+float floatFromBits(std::uint32_t bits)
+{
+  return std::bit_cast<float>(bits);
+}
+
+void requireExactDouble(double actual, double expected, const std::string& message)
+{
+  if (actual != expected)
+  {
+    throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", actual " +
+                             std::to_string(actual));
+  }
+}
+
+void requireExactFloat(float actual, float expected, const std::string& message)
+{
+  if (std::bit_cast<std::uint32_t>(actual) != std::bit_cast<std::uint32_t>(expected))
   {
     throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", actual " +
                              std::to_string(actual));
@@ -429,6 +459,50 @@ void testTrilinearInterpolation()
   requireNear(maiw::cardiac::sampleTrilinearNearestBoundary(volume, 0.25, 0.5, 0.75),
               80.25,
               "off-center trilinear interpolation mismatch");
+}
+
+void testScipyOrder1NearestArithmeticRegression()
+{
+  {
+    const VolumeDimensions dimensions{2, 2, 2};
+    const std::vector<double> values{
+        0.0, 0.0,
+        0.0, 18.0,
+        27.0, 27.0,
+        31.0, 31.0};
+
+    // Regression for the first patient001 ED resampling mismatch: SciPy derives
+    // weights from the raw negative coordinate and maps only the footprint
+    // indices to the nearest boundary before summing corner contributions.
+    const double actual = maiw::cardiac::sampleTrilinearNearestBoundary(
+        viewOf(dimensions, values),
+        -1.99999999999960209607e-02,
+        7.80000000000001136868e-01,
+        7.5e-01);
+    requireExactDouble(actual,
+                       doubleFromBits(0x4036970a3d70a3d9ULL),
+                       "SciPy nearest-boundary arithmetic regression mismatch");
+  }
+
+  {
+    const VolumeDimensions dimensions{2, 3, 3};
+    std::vector<double> values(dimensions.width * dimensions.height * dimensions.depth, 0.0);
+    values[linearIndexXyz(dimensions, 1, 1, 1)] = 1.0;
+    values[linearIndexXyz(dimensions, 1, 1, 2)] = 2.0;
+    values[linearIndexXyz(dimensions, 1, 2, 1)] = 1.0;
+
+    // Regression for the first patient006 ED resampling mismatch: SciPy sums
+    // order=1 corner contributions with Z as the fastest footprint axis rather
+    // than using repeated X-then-Y-then-Z lerp.
+    const double actual = maiw::cardiac::sampleTrilinearNearestBoundary(
+        viewOf(dimensions, values),
+        7.266666666666594665e-01,
+        1.633333333333325754e+00,
+        1.625e+00);
+    requireExactDouble(actual,
+                       doubleFromBits(0x3fe360b60b60b613ULL),
+                       "SciPy interior arithmetic regression mismatch");
+  }
 }
 
 void testNearestBoundaryExtension()
@@ -1137,13 +1211,183 @@ void testJointIntensityNormalizationMatchesNumpyProbe()
   }
 }
 
+void testJointIntensityNormalizationUsesNumpyPairwiseReduction()
+{
+  const VolumeDimensions dimensions{65, 1, 1};
+  const auto ed = makeXyzVolumeWithVoxels(
+      dimensions,
+      {207.91799999999961,
+       223.88639999999941,
+       122.29679999999968,
+       14.574400000000002,
+       12.144399999999997,
+       11.001100000000003,
+       10.002200000000007,
+       9.0383000000000049,
+       8,
+       7.4266999999999994,
+       6.6177999999999999,
+       6.0000000000000009,
+       6,
+       236.2492000000002,
+       252.95709999999991,
+       136.80399999999992,
+       14.218899999999998,
+       11.63079999999999,
+       10.249599999999994,
+       9.3945999999999987,
+       8.8027000000000015,
+       8.2108000000000025,
+       7.3027000000000015,
+       6.5,
+       6,
+       6,
+       236.36800000000036,
+       264.61300000000006,
+       144.52000000000001,
+       14.179000000000007,
+       11.679999999999993,
+       10.094499999999995,
+       9.2829999999999977,
+       8.8585000000000012,
+       8.4340000000000046,
+       7.2190000000000012,
+       6.407,
+       6.0000000000000009,
+       6,
+       213.19440000000014,
+       261.31020000000012,
+       145.75320000000005,
+       13.713200000000009,
+       12.379999999999995,
+       10.790000000000003,
+       9.6300000000000026,
+       8.7747000000000011,
+       8.0988000000000007,
+       6.8096999999999959,
+       6.1899999999999968,
+       6,
+       6,
+       171.32200000000049,
+       244.11130000000031,
+       140.65540000000013,
+       12.797300000000009,
+       12.379999999999994,
+       11.18,
+       9.8900000000000006,
+       8.8240999999999996,
+       8.2963999999999967,
+       6.9613999999999967,
+       6.2581999999999978,
+       6,
+       6});
+  const auto es = makeXyzVolumeWithVoxels(
+      dimensions,
+      {120.15760000000007,
+       221.26090000000011,
+       133.26520000000008,
+       11.8055,
+       12.516799999999998,
+       10.629200000000001,
+       9.5,
+       8.7499999999999982,
+       8,
+       7.25,
+       6.5000000000000009,
+       5.9720999999999993,
+       5.8883999999999954,
+       75.550800000000336,
+       198.79860000000025,
+       124.99060000000013,
+       10.881700000000004,
+       13.226799999999985,
+       10.806699999999998,
+       9.4299999999999997,
+       8.6666999999999987,
+       8.0868000000000002,
+       7.2717000000000009,
+       6.5266000000000002,
+       5.8715999999999982,
+       5.326799999999996,
+       56.814000000000277,
+       184.9140000000003,
+       118.50800000000017,
+       10.491499999999998,
+       13.759999999999991,
+       10.968499999999995,
+       9.0689999999999955,
+       8.2144999999999975,
+       8.5580000000000087,
+       7.3895000000000017,
+       6.6709999999999985,
+       6.0314999999999968,
+       5.0999999999999952,
+       57.240000000000236,
+       180.08940000000035,
+       115.9910000000002,
+       11.647100000000009,
+       13.759999999999991,
+       11.224999999999993,
+       9.6713999999999949,
+       8.7220999999999975,
+       8,
+       7.2499999999999991,
+       6.4999999999999991,
+       5.9849999999999994,
+       5.9399999999999977,
+       64.99080000000032,
+       181.45230000000046,
+       116.26160000000024,
+       12.627800000000009,
+       13.759999999999991,
+       11.224999999999994,
+       9.3799999999999955,
+       8.2849999999999984,
+       8,
+       7.2500000000000009,
+       6.5,
+       5.7499999999999991,
+       5});
+
+  const maiw::cardiac::CardiacMriNormalizationResult result =
+      maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
+
+  // These values are derived from the patient001 cropped ED stream at the
+  // normalization divergence point and are exact NumPy 2.4.3 float64 results.
+  requireExactDouble(result.metadata.clipLower,
+                     doubleFromBits(0x4014420c49ba5e32ULL),
+                     "NumPy pairwise lower percentile regression mismatch");
+  requireExactDouble(result.metadata.clipUpper,
+                     doubleFromBits(0x407067b91d57ff9cULL),
+                     "NumPy pairwise upper percentile regression mismatch");
+  requireExactDouble(result.metadata.mean,
+                     doubleFromBits(0x40466c5e2b2e81f7ULL),
+                     "NumPy pairwise mean regression mismatch");
+  requireExactDouble(result.metadata.std,
+                     doubleFromBits(0x4052088033c31412ULL),
+                     "NumPy pairwise population std regression mismatch");
+
+  requireExactFloat(result.volumes.ed.voxels[0],
+                    floatFromBits(0x4010af78U),
+                    "NumPy pairwise normalized ED first voxel mismatch");
+  requireExactFloat(result.volumes.ed.voxels[27],
+                    floatFromBits(0x4041191aU),
+                    "NumPy pairwise normalized ED clipped high voxel mismatch");
+  requireExactFloat(result.volumes.es.voxels[0],
+                    floatFromBits(0x3f85a3c0U),
+                    "NumPy pairwise normalized ES first voxel mismatch");
+  requireExactFloat(result.volumes.es.voxels[64],
+                    floatFromBits(0xbf0d2fe5U),
+                    "NumPy pairwise normalized ES last voxel mismatch");
+}
+
 void testJointStatisticsUsePythonXyzCOrderForReal3dVolumes()
 {
   const VolumeDimensions dimensions{2, 2, 2};
   const auto ed = makeXyzVolumeWithVoxels(
-      dimensions, {1e16, 1.0, -1e16, 2.0, 3.0, 4.0, 5.0, 6.0});
+      dimensions, {6.0, 11.0, 1e16, 7.0, 3.0, 10.0, 8.0, -1e16});
   const auto es = makeXyzVolumeWithVoxels(
-      dimensions, {-1e16, 7.0, 1e16, 8.0, 9.0, 10.0, 11.0, 12.0});
+      dimensions, {12.0, -1e16, 1.0, 5.0, 1e16, 4.0, 2.0, 9.0});
 
   const maiw::cardiac::CardiacMriNormalizationResult result =
       maiw::cardiac::normalizeCroppedPairIntensities(ed, es);
@@ -1569,6 +1813,7 @@ int main()
     testIdentityGridSampling();
     testVoxelCentersAndLinearInterpolation();
     testTrilinearInterpolation();
+    testScipyOrder1NearestArithmeticRegression();
     testNearestBoundaryExtension();
     testRejectsNonFiniteCoordinates();
     testSingleVoxelAxisInterpolation();
@@ -1592,6 +1837,7 @@ int main()
     testCropRejectsOverflowingVolumeCount();
     testPercentileLinearFloat64();
     testJointIntensityNormalizationMatchesNumpyProbe();
+    testJointIntensityNormalizationUsesNumpyPairwiseReduction();
     testJointStatisticsUsePythonXyzCOrderForReal3dVolumes();
     testJointClippingAndStatisticsUseBothPhases();
     testNormalizationRejectsDegenerateOrInvalidInputs();

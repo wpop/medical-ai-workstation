@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -683,6 +684,77 @@ std::vector<double> clippedVoxels(const std::vector<double>& values, double lowe
   return clipped;
 }
 
+class NumpyPairwiseReducer
+{
+public:
+  [[nodiscard]] static double sum(std::span<const double> values)
+  {
+    return sumRecursive(values);
+  }
+
+private:
+  static constexpr std::size_t kScalarCount = 8;
+  static constexpr std::size_t kBlockSize = 128;
+
+  [[nodiscard]] static double sumRecursive(std::span<const double> values)
+  {
+    if (values.size() < kScalarCount)
+    {
+      return sumScalar(values);
+    }
+
+    if (values.size() <= kBlockSize)
+    {
+      return sumSmallBlock(values);
+    }
+
+    std::size_t split = values.size() / 2U;
+    split -= split % kScalarCount;
+    return sumRecursive(values.first(split)) + sumRecursive(values.subspan(split));
+  }
+
+  [[nodiscard]] static double sumScalar(std::span<const double> values)
+  {
+    double sum = 0.0;
+    for (const double value : values)
+    {
+      sum += value;
+    }
+    return sum;
+  }
+
+  [[nodiscard]] static double sumSmallBlock(std::span<const double> values)
+  {
+    std::array<double, kScalarCount> partials{};
+    for (std::size_t index = 0; index < kScalarCount; ++index)
+    {
+      partials[index] = values[index];
+    }
+
+    std::size_t index = kScalarCount;
+    const std::size_t vectorizedEnd = values.size() - (values.size() % kScalarCount);
+    while (index < vectorizedEnd)
+    {
+      for (std::size_t lane = 0; lane < kScalarCount; ++lane)
+      {
+        partials[lane] += values[index + lane];
+      }
+      index += kScalarCount;
+    }
+
+    // NumPy's double ufunc reduction folds the eight partial sums as a fixed
+    // pairwise tree before adding any scalar tail elements.
+    double sum = ((partials[0] + partials[1]) + (partials[2] + partials[3])) +
+                 ((partials[4] + partials[5]) + (partials[6] + partials[7]));
+    while (index < values.size())
+    {
+      sum += values[index];
+      ++index;
+    }
+    return sum;
+  }
+};
+
 double meanOf(const std::vector<double>& values)
 {
   if (values.empty())
@@ -690,11 +762,9 @@ double meanOf(const std::vector<double>& values)
     throw std::invalid_argument("Mean input must not be empty");
   }
 
-  double sum = 0.0;
-  for (const double value : values)
-  {
-    sum += value;
-  }
+  // np.mean(float64) delegates to NumPy's ufunc pairwise reduction before the
+  // final division. The reduction tree is part of the golden parity contract.
+  const double sum = NumpyPairwiseReducer::sum(values);
   return sum / static_cast<double>(values.size());
 }
 
@@ -705,12 +775,15 @@ double populationStdOf(const std::vector<double>& values, double mean)
     throw std::invalid_argument("Standard-deviation input must not be empty");
   }
 
-  double squaredSum = 0.0;
+  std::vector<double> squaredDeltas;
+  squaredDeltas.reserve(values.size());
   for (const double value : values)
   {
     const double delta = value - mean;
-    squaredSum += delta * delta;
+    squaredDeltas.push_back(delta * delta);
   }
+
+  const double squaredSum = NumpyPairwiseReducer::sum(squaredDeltas);
   return std::sqrt(squaredSum / static_cast<double>(values.size()));
 }
 
@@ -804,28 +877,51 @@ void requireLpsOrientedVolume(const qvp::VolumeData& volume, const char* name)
   }
 }
 
-double clampCoordinate(double coordinate, std::size_t size)
+std::size_t mapNearestBoundaryIndex(long long index, std::size_t size)
 {
-  const double upper = static_cast<double>(size - 1);
-  return std::clamp(coordinate, 0.0, upper);
+  requirePositiveDimension(size, "axis size");
+  if (index < 0)
+  {
+    return 0;
+  }
+
+  const auto unsignedIndex = static_cast<unsigned long long>(index);
+  const auto upper = static_cast<unsigned long long>(size - 1U);
+  if (unsignedIndex > upper)
+  {
+    return size - 1U;
+  }
+
+  return static_cast<std::size_t>(index);
 }
 
 struct AxisInterpolation
 {
   std::size_t lower = 0;
   std::size_t upper = 0;
-  double weight = 0.0;
+  double lowerWeight = 1.0;
+  double upperWeight = 0.0;
 };
 
 AxisInterpolation interpolationForAxis(double coordinate, std::size_t size, const char* name)
 {
   requirePositiveDimension(size, "axis size");
   requireFiniteCoordinate(coordinate, name);
-  const double clamped = clampCoordinate(coordinate, size);
-  const double lowerAsDouble = std::floor(clamped);
-  const auto lower = static_cast<std::size_t>(lowerAsDouble);
-  const std::size_t upper = std::min(lower + 1, size - 1);
-  return AxisInterpolation{lower, upper, clamped - lowerAsDouble};
+  const double lowerAsDouble = std::floor(coordinate);
+  const auto lowerRaw = static_cast<long long>(lowerAsDouble);
+
+  // SciPy computes linear interpolation weights from the raw coordinate and
+  // applies nearest-boundary mapping to each filter-footprint index afterward.
+  const double fractional = coordinate - lowerAsDouble;
+  const double lowerWeight = 1.0 - fractional;
+  double upperWeight = 1.0;
+  upperWeight -= lowerWeight;
+
+  return AxisInterpolation{
+      mapNearestBoundaryIndex(lowerRaw, size),
+      mapNearestBoundaryIndex(lowerRaw + 1LL, size),
+      lowerWeight,
+      upperWeight};
 }
 
 std::size_t voxelIndex(maiw::cardiac::VolumeDimensions dimensions,
@@ -836,9 +932,18 @@ std::size_t voxelIndex(maiw::cardiac::VolumeDimensions dimensions,
   return (z * dimensions.height * dimensions.width) + (y * dimensions.width) + x;
 }
 
-double lerp(double lhs, double rhs, double weight)
+double scipyOrder1Contribution(double value,
+                               double xWeight,
+                               double yWeight,
+                               double zWeight)
 {
-  return (lhs * (1.0 - weight)) + (rhs * weight);
+  // Match scipy.ndimage's order=1 accumulation: source value first, then one
+  // rounded multiplication per axis before adding the corner contribution.
+  double coefficient = value;
+  coefficient *= xWeight;
+  coefficient *= yWeight;
+  coefficient *= zWeight;
+  return coefficient;
 }
 
 } // namespace
@@ -974,22 +1079,41 @@ double sampleTrilinearNearestBoundary(const Float64VolumeView& volume,
     return volume.voxels[voxelIndex(volume.dimensions, vx, vy, vz)];
   };
 
-  const double c00 = lerp(valueAt(x.lower, y.lower, z.lower),
-                         valueAt(x.upper, y.lower, z.lower),
-                         x.weight);
-  const double c10 = lerp(valueAt(x.lower, y.upper, z.lower),
-                         valueAt(x.upper, y.upper, z.lower),
-                         x.weight);
-  const double c01 = lerp(valueAt(x.lower, y.lower, z.upper),
-                         valueAt(x.upper, y.lower, z.upper),
-                         x.weight);
-  const double c11 = lerp(valueAt(x.lower, y.upper, z.upper),
-                         valueAt(x.upper, y.upper, z.upper),
-                         x.weight);
+  double output = 0.0;
+  output += scipyOrder1Contribution(valueAt(x.lower, y.lower, z.lower),
+                                    x.lowerWeight,
+                                    y.lowerWeight,
+                                    z.lowerWeight);
+  output += scipyOrder1Contribution(valueAt(x.lower, y.lower, z.upper),
+                                    x.lowerWeight,
+                                    y.lowerWeight,
+                                    z.upperWeight);
+  output += scipyOrder1Contribution(valueAt(x.lower, y.upper, z.lower),
+                                    x.lowerWeight,
+                                    y.upperWeight,
+                                    z.lowerWeight);
+  output += scipyOrder1Contribution(valueAt(x.lower, y.upper, z.upper),
+                                    x.lowerWeight,
+                                    y.upperWeight,
+                                    z.upperWeight);
+  output += scipyOrder1Contribution(valueAt(x.upper, y.lower, z.lower),
+                                    x.upperWeight,
+                                    y.lowerWeight,
+                                    z.lowerWeight);
+  output += scipyOrder1Contribution(valueAt(x.upper, y.lower, z.upper),
+                                    x.upperWeight,
+                                    y.lowerWeight,
+                                    z.upperWeight);
+  output += scipyOrder1Contribution(valueAt(x.upper, y.upper, z.lower),
+                                    x.upperWeight,
+                                    y.upperWeight,
+                                    z.lowerWeight);
+  output += scipyOrder1Contribution(valueAt(x.upper, y.upper, z.upper),
+                                    x.upperWeight,
+                                    y.upperWeight,
+                                    z.upperWeight);
 
-  const double c0 = lerp(c00, c10, y.weight);
-  const double c1 = lerp(c01, c11, y.weight);
-  return lerp(c0, c1, z.weight);
+  return output;
 }
 
 std::vector<double> resampleLinearNearestBoundary(const Float64VolumeView& source,
