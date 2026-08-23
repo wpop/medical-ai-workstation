@@ -110,6 +110,30 @@ set_target_properties(
 
 find_package(nlohmann_json REQUIRED)
 
+add_library(maiw-cardiac-classification
+    src/cardiac/CardiacMriDeploymentMetadata.cpp
+    src/cardiac/CardiacMriClassificationResult.cpp
+)
+
+target_include_directories(maiw-cardiac-classification
+    PUBLIC
+        include
+)
+
+target_link_libraries(maiw-cardiac-classification
+    PRIVATE
+        nlohmann_json::nlohmann_json
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(maiw-cardiac-classification
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
     add_library(maiw-cardiac-preprocessing
         src/cardiac/CardiacMriPreprocessing.cpp
@@ -159,6 +183,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(BUILD_TESTING)
+    add_executable(test-cardiac-mri-classification
+        tests/cardiac/TestCardiacMriClassification.cpp
+    )
+
+    target_link_libraries(test-cardiac-mri-classification
+        PRIVATE
+            maiw-cardiac-classification
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test-cardiac-mri-classification
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    add_test(
+        NAME cardiac-mri-classification-contract
+        COMMAND test-cardiac-mri-classification
+    )
+
     if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         add_executable(test-cardiac-mri-preprocessing
             tests/cardiac/TestCardiacMriPreprocessing.cpp
