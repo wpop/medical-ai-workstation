@@ -110,6 +110,30 @@ set_target_properties(
 
 find_package(nlohmann_json REQUIRED)
 
+add_library(maiw-cardiac-classification
+    src/cardiac/CardiacMriDeploymentMetadata.cpp
+    src/cardiac/CardiacMriClassificationResult.cpp
+)
+
+target_include_directories(maiw-cardiac-classification
+    PUBLIC
+        include
+)
+
+target_link_libraries(maiw-cardiac-classification
+    PRIVATE
+        nlohmann_json::nlohmann_json
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(maiw-cardiac-classification
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
     add_library(maiw-cardiac-preprocessing
         src/cardiac/CardiacMriPreprocessing.cpp
@@ -158,7 +182,43 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
+if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+    target_sources(maiw-cardiac-classification
+        PRIVATE
+            src/cardiac/CardiacMriClassificationService.cpp
+    )
+
+    target_link_libraries(maiw-cardiac-classification
+        PUBLIC
+            maiw-cardiac-preprocessing
+            maiw-onnx-runtime
+    )
+endif()
+
 if(BUILD_TESTING)
+    add_executable(test-cardiac-mri-classification
+        tests/cardiac/TestCardiacMriClassification.cpp
+    )
+
+    target_link_libraries(test-cardiac-mri-classification
+        PRIVATE
+            maiw-cardiac-classification
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test-cardiac-mri-classification
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    add_test(
+        NAME cardiac-mri-classification-contract
+        COMMAND test-cardiac-mri-classification
+    )
+
     if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         add_executable(test-cardiac-mri-preprocessing
             tests/cardiac/TestCardiacMriPreprocessing.cpp
@@ -216,6 +276,49 @@ if(BUILD_TESTING)
             )
         else()
             message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH/ES_PATH are not set; cardiac real preprocessing smoke test disabled")
+        endif()
+
+        if(MAIW_CARDIAC_MRI_PACKAGE_DIR
+           AND MAIW_CARDIAC_MRI_REAL_ED_PATH
+           AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
+            add_executable(test-cardiac-mri-classification-service
+                tests/cardiac/TestCardiacMriClassificationService.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-service
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                    MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-service
+                PRIVATE
+                    maiw-cardiac-classification
+                    qt-viewer-pro-io
+                    Qt6::Core
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-service
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-service
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-service-smoke
+                COMMAND test-cardiac-mri-classification-service
+            )
+        else()
+            message(STATUS "Cardiac package or real ED/ES paths are not set; cardiac classification service smoke test disabled")
         endif()
 
         # This exact preprocessing parity gate needs the golden package, real ACDC
@@ -309,6 +412,53 @@ if(BUILD_TESTING)
             add_test(
                 NAME cardiac-mri-end-to-end-golden-parity
                 COMMAND test-cardiac-mri-end-to-end-golden-parity
+            )
+
+            # Phase 7 validates the complete public cardiac classification service
+            # against the same seven frozen Python inference references.
+            add_executable(test-cardiac-mri-classification-service-golden-parity
+                tests/cardiac/TestCardiacMriClassificationServiceGoldenParity.cpp
+                tests/support/NpyReader.cpp
+                tests/support/Sha256.cpp
+            )
+
+            target_include_directories(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    tests/support
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR="${MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    maiw-cardiac-classification
+                    qt-viewer-pro-io
+                    Qt6::Core
+                    nlohmann_json::nlohmann_json
+                    OpenSSL::Crypto
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-service-golden-parity
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-service-golden-parity
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-service-golden-parity
+                COMMAND test-cardiac-mri-classification-service-golden-parity
             )
         else()
             message(STATUS "MAIW_CARDIAC_MRI_PACKAGE_DIR or MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR is not set; real-data cardiac parity tests disabled")
