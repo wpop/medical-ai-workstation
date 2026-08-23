@@ -413,6 +413,53 @@ if(BUILD_TESTING)
                 NAME cardiac-mri-end-to-end-golden-parity
                 COMMAND test-cardiac-mri-end-to-end-golden-parity
             )
+
+            # Phase 7 validates the complete public cardiac classification service
+            # against the same seven frozen Python inference references.
+            add_executable(test-cardiac-mri-classification-service-golden-parity
+                tests/cardiac/TestCardiacMriClassificationServiceGoldenParity.cpp
+                tests/support/NpyReader.cpp
+                tests/support/Sha256.cpp
+            )
+
+            target_include_directories(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    tests/support
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR="${MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-service-golden-parity
+                PRIVATE
+                    maiw-cardiac-classification
+                    qt-viewer-pro-io
+                    Qt6::Core
+                    nlohmann_json::nlohmann_json
+                    OpenSSL::Crypto
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-service-golden-parity
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-service-golden-parity
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-service-golden-parity
+                COMMAND test-cardiac-mri-classification-service-golden-parity
+            )
         else()
             message(STATUS "MAIW_CARDIAC_MRI_PACKAGE_DIR or MAIW_CARDIAC_MRI_ACDC_TRAINING_DIR is not set; real-data cardiac parity tests disabled")
         endif()
