@@ -182,6 +182,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
+if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+    target_sources(maiw-cardiac-classification
+        PRIVATE
+            src/cardiac/CardiacMriClassificationService.cpp
+    )
+
+    target_link_libraries(maiw-cardiac-classification
+        PUBLIC
+            maiw-cardiac-preprocessing
+            maiw-onnx-runtime
+    )
+endif()
+
 if(BUILD_TESTING)
     add_executable(test-cardiac-mri-classification
         tests/cardiac/TestCardiacMriClassification.cpp
@@ -263,6 +276,49 @@ if(BUILD_TESTING)
             )
         else()
             message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH/ES_PATH are not set; cardiac real preprocessing smoke test disabled")
+        endif()
+
+        if(MAIW_CARDIAC_MRI_PACKAGE_DIR
+           AND MAIW_CARDIAC_MRI_REAL_ED_PATH
+           AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
+            add_executable(test-cardiac-mri-classification-service
+                tests/cardiac/TestCardiacMriClassificationService.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-service
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                    MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-service
+                PRIVATE
+                    maiw-cardiac-classification
+                    qt-viewer-pro-io
+                    Qt6::Core
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-service
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-service
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-service-smoke
+                COMMAND test-cardiac-mri-classification-service
+            )
+        else()
+            message(STATUS "Cardiac package or real ED/ES paths are not set; cardiac classification service smoke test disabled")
         endif()
 
         # This exact preprocessing parity gate needs the golden package, real ACDC
