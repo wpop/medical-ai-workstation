@@ -55,3 +55,65 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
+
+  qt-integration:
+    name: Qt Integration
+    runs-on: ubuntu-latest
+
+    env:
+      ONNXRUNTIME_VERSION: 1.29.0
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            git \
+            libinsighttoolkit5-dev \
+            libopencv-dev \
+            nlohmann-json3-dev \
+            qt6-base-dev
+
+      - name: Install ONNX Runtime
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.deps/onnxruntime"
+          curl -fsSL \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz" \
+            -o /tmp/onnxruntime.tgz
+          tar -xzf /tmp/onnxruntime.tgz \
+            --strip-components=1 \
+            -C "${GITHUB_WORKSPACE}/.deps/onnxruntime"
+
+      - name: Check out pinned qt-viewer-pro
+        run: |
+          git clone \
+            https://github.com/wpop/qt-viewer-pro.git \
+            "${GITHUB_WORKSPACE}/.deps/qt-viewer-pro"
+          git -C "${GITHUB_WORKSPACE}/.deps/qt-viewer-pro" \
+            checkout --detach 3f69ba766ced396b37b538cb31edcce1281cf199
+
+      - name: Configure Qt integration
+        run: |
+          cmake -S . -B build-qt-integration \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT="${GITHUB_WORKSPACE}/.deps/onnxruntime" \
+            -DMAIW_ENABLE_QTVIEWERPRO_INTEGRATION=ON \
+            -DMAIW_QTVIEWERPRO_SOURCE_DIR="${GITHUB_WORKSPACE}/.deps/qt-viewer-pro" \
+            -DMAIW_CARDIAC_MRI_PACKAGE_DIR="" \
+            -DMAIW_CARDIAC_MRI_ACDC_TRAINING_DIR="" \
+            -DMAIW_CARDIAC_MRI_REAL_ED_PATH="" \
+            -DMAIW_CARDIAC_MRI_REAL_ES_PATH=""
+
+      - name: Build Qt integration
+        run: cmake --build build-qt-integration --config Release --parallel
+
+      - name: Test Qt integration
+        run: ctest --test-dir build-qt-integration --build-config Release --output-on-failure
