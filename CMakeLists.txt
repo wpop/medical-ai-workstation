@@ -39,7 +39,7 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         message(FATAL_ERROR "MAIW_QTVIEWERPRO_SOURCE_DIR must point to a plausible qt-viewer-pro source tree with CMakeLists.txt and public core/IO headers")
     endif()
 
-    find_package(Qt6 REQUIRED COMPONENTS Core)
+    find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Widgets)
 
     add_subdirectory(
         "${MAIW_QTVIEWERPRO_SOURCE_DIR}"
@@ -193,6 +193,67 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
             maiw-cardiac-preprocessing
             maiw-onnx-runtime
     )
+
+    add_library(maiw-cardiac-classification-workflow
+        include/maiw/qt/CardiacMriClassificationResultWidget.h
+        include/maiw/qt/CardiacMriClassificationWindow.h
+        include/maiw/qt/CardiacMriClassificationWorkflow.h
+        src/qt/CardiacMriClassificationResultWidget.cpp
+        src/qt/CardiacMriClassificationWindow.cpp
+        src/qt/CardiacMriClassificationWorkflow.cpp
+    )
+
+    set_target_properties(maiw-cardiac-classification-workflow
+        PROPERTIES
+            AUTOMOC ON
+    )
+
+    target_include_directories(maiw-cardiac-classification-workflow
+        PUBLIC
+            include
+    )
+
+    target_link_libraries(maiw-cardiac-classification-workflow
+        PUBLIC
+            maiw-cardiac-classification
+            Qt6::Core
+            Qt6::Widgets
+        PRIVATE
+            qt-viewer-pro-io
+            Qt6::Concurrent
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(maiw-cardiac-classification-workflow
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    add_executable(medical-ai-workstation
+        src/app/main.cpp
+    )
+
+    target_link_libraries(medical-ai-workstation
+        PRIVATE
+            maiw-cardiac-classification-workflow
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(medical-ai-workstation
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    set_target_properties(medical-ai-workstation
+        PROPERTIES
+            BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+    )
 endif()
 
 if(BUILD_TESTING)
@@ -242,6 +303,76 @@ if(BUILD_TESTING)
             NAME cardiac-mri-preprocessing-math
             COMMAND test-cardiac-mri-preprocessing
         )
+
+        add_executable(test-cardiac-mri-classification-result-widget
+            tests/qt/TestCardiacMriClassificationResultWidget.cpp
+        )
+
+        target_link_libraries(test-cardiac-mri-classification-result-widget
+            PRIVATE
+                maiw-cardiac-classification-workflow
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-cardiac-mri-classification-result-widget
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME cardiac-mri-classification-result-widget
+            COMMAND test-cardiac-mri-classification-result-widget
+        )
+
+        set_tests_properties(cardiac-mri-classification-result-widget
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+
+        if(MAIW_CARDIAC_MRI_PACKAGE_DIR)
+            add_executable(test-cardiac-mri-classification-window
+                tests/qt/TestCardiacMriClassificationWindow.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-window
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-window
+                PRIVATE
+                    maiw-cardiac-classification-workflow
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-window
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-window
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-window
+                COMMAND test-cardiac-mri-classification-window
+            )
+
+            set_tests_properties(cardiac-mri-classification-window
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+        else()
+            message(STATUS "MAIW_CARDIAC_MRI_PACKAGE_DIR is not set; cardiac classification window test disabled")
+        endif()
 
         if(MAIW_CARDIAC_MRI_REAL_ED_PATH AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
             add_executable(test-cardiac-mri-preprocessor-real-smoke
@@ -317,8 +448,43 @@ if(BUILD_TESTING)
                 NAME cardiac-mri-classification-service-smoke
                 COMMAND test-cardiac-mri-classification-service
             )
+
+            add_executable(test-cardiac-mri-classification-workflow
+                tests/qt/TestCardiacMriClassificationWorkflow.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-workflow
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                    MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-workflow
+                PRIVATE
+                    maiw-cardiac-classification-workflow
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-workflow
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-workflow
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-workflow
+                COMMAND test-cardiac-mri-classification-workflow
+            )
         else()
-            message(STATUS "Cardiac package or real ED/ES paths are not set; cardiac classification service smoke test disabled")
+            message(STATUS "Cardiac package or real ED/ES paths are not set; cardiac classification service/workflow tests disabled")
         endif()
 
         # This exact preprocessing parity gate needs the golden package, real ACDC
