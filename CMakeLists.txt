@@ -39,7 +39,7 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         message(FATAL_ERROR "MAIW_QTVIEWERPRO_SOURCE_DIR must point to a plausible qt-viewer-pro source tree with CMakeLists.txt and public core/IO headers")
     endif()
 
-    find_package(Qt6 REQUIRED COMPONENTS Core Concurrent)
+    find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Widgets)
 
     add_subdirectory(
         "${MAIW_QTVIEWERPRO_SOURCE_DIR}"
@@ -195,7 +195,9 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
     )
 
     add_library(maiw-cardiac-classification-workflow
+        include/maiw/qt/CardiacMriClassificationResultWidget.h
         include/maiw/qt/CardiacMriClassificationWorkflow.h
+        src/qt/CardiacMriClassificationResultWidget.cpp
         src/qt/CardiacMriClassificationWorkflow.cpp
     )
 
@@ -213,6 +215,7 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         PUBLIC
             maiw-cardiac-classification
             Qt6::Core
+            Qt6::Widgets
         PRIVATE
             qt-viewer-pro-io
             Qt6::Concurrent
@@ -274,6 +277,34 @@ if(BUILD_TESTING)
         add_test(
             NAME cardiac-mri-preprocessing-math
             COMMAND test-cardiac-mri-preprocessing
+        )
+
+        add_executable(test-cardiac-mri-classification-result-widget
+            tests/qt/TestCardiacMriClassificationResultWidget.cpp
+        )
+
+        target_link_libraries(test-cardiac-mri-classification-result-widget
+            PRIVATE
+                maiw-cardiac-classification-workflow
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-cardiac-mri-classification-result-widget
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME cardiac-mri-classification-result-widget
+            COMMAND test-cardiac-mri-classification-result-widget
+        )
+
+        set_tests_properties(cardiac-mri-classification-result-widget
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
 
         if(MAIW_CARDIAC_MRI_REAL_ED_PATH AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
