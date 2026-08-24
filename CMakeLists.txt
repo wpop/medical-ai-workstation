@@ -196,8 +196,10 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
 
     add_library(maiw-cardiac-classification-workflow
         include/maiw/qt/CardiacMriClassificationResultWidget.h
+        include/maiw/qt/CardiacMriClassificationWindow.h
         include/maiw/qt/CardiacMriClassificationWorkflow.h
         src/qt/CardiacMriClassificationResultWidget.cpp
+        src/qt/CardiacMriClassificationWindow.cpp
         src/qt/CardiacMriClassificationWorkflow.cpp
     )
 
@@ -306,6 +308,48 @@ if(BUILD_TESTING)
             PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
+
+        if(MAIW_CARDIAC_MRI_PACKAGE_DIR)
+            add_executable(test-cardiac-mri-classification-window
+                tests/qt/TestCardiacMriClassificationWindow.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-window
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-window
+                PRIVATE
+                    maiw-cardiac-classification-workflow
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-window
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-window
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-window
+                COMMAND test-cardiac-mri-classification-window
+            )
+
+            set_tests_properties(cardiac-mri-classification-window
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+        else()
+            message(STATUS "MAIW_CARDIAC_MRI_PACKAGE_DIR is not set; cardiac classification window test disabled")
+        endif()
 
         if(MAIW_CARDIAC_MRI_REAL_ED_PATH AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
             add_executable(test-cardiac-mri-preprocessor-real-smoke
