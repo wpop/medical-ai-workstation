@@ -231,6 +231,29 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
                 -Wpedantic
         )
     endif()
+
+    add_executable(medical-ai-workstation
+        src/app/main.cpp
+    )
+
+    target_link_libraries(medical-ai-workstation
+        PRIVATE
+            maiw-cardiac-classification-workflow
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(medical-ai-workstation
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
+    set_target_properties(medical-ai-workstation
+        PROPERTIES
+            BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+    )
 endif()
 
 if(BUILD_TESTING)
