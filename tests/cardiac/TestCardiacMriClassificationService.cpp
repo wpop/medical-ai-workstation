@@ -3,6 +3,7 @@
 
 #include "qtviewerpro/io/MedicalVolumeLoaderRegistry.h"
 
+#include <nlohmann/json.hpp>
 #include <QString>
 #include <onnxruntime_cxx_api.h>
 
@@ -15,11 +16,27 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace
 {
 
 constexpr double kProbabilitySumTolerance = 1e-12;
+
+std::pair<QString, QString> resolveVolumePaths(int argc, char* argv[])
+{
+  if (argc == 1)
+  {
+    return {QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH),
+            QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ES_PATH)};
+  }
+  if (argc == 3)
+  {
+    return {QString::fromLocal8Bit(argv[1]), QString::fromLocal8Bit(argv[2])};
+  }
+  throw std::invalid_argument(
+      "Usage: test-cardiac-mri-classification-service [ED_PATH ES_PATH]");
+}
 
 qvp::VolumeData loadRequiredVolume(const QString& path, const char* name)
 {
@@ -79,16 +96,27 @@ void validateResult(
           "service probability argmax does not match the prediction");
 }
 
+void printResult(const maiw::cardiac::CardiacMriClassificationResult& result)
+{
+  const nlohmann::json document{
+      {"predicted_class_index", result.predictedClassIndex()},
+      {"predicted_class_name", result.predictedClassName()},
+      {"logits", result.rawLogits()},
+      {"probabilities", result.probabilities()}};
+  std::cout << "MAIW_REAL_STUDY_RESULT " << document.dump() << '\n';
+}
+
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
   try
   {
+    const auto [edPath, esPath] = resolveVolumePaths(argc, argv);
     const qvp::VolumeData edVolume =
-        loadRequiredVolume(QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH), "ED volume");
+        loadRequiredVolume(edPath, "ED volume");
     const qvp::VolumeData esVolume =
-        loadRequiredVolume(QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ES_PATH), "ES volume");
+        loadRequiredVolume(esPath, "ES volume");
 
     const auto metadata = maiw::cardiac::CardiacMriDeploymentMetadata::load(
         std::filesystem::path{MAIW_CARDIAC_MRI_PACKAGE_DIR});
@@ -99,6 +127,7 @@ int main()
     const maiw::cardiac::CardiacMriClassificationResult result =
         service.classify(edVolume, esVolume);
     validateResult(result, metadata.classNames());
+    printResult(result);
 
     std::cout << "Cardiac MRI classification service smoke passed." << '\n';
     return 0;

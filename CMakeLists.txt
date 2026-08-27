@@ -428,6 +428,7 @@ if(BUILD_TESTING)
                     maiw-cardiac-classification
                     qt-viewer-pro-io
                     Qt6::Core
+                    nlohmann_json::nlohmann_json
             )
 
             if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
