@@ -287,12 +287,16 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
 
-    qt_generate_deploy_app_script(
-        TARGET medical-ai-workstation
-        OUTPUT_SCRIPT MAIW_QT_DEPLOY_SCRIPT
-        NO_TRANSLATIONS
-    )
-    install(SCRIPT "${MAIW_QT_DEPLOY_SCRIPT}")
+    if(Qt6Core_VERSION VERSION_GREATER_EQUAL 6.5)
+        qt_generate_deploy_app_script(
+            TARGET medical-ai-workstation
+            OUTPUT_SCRIPT MAIW_QT_DEPLOY_SCRIPT
+            NO_TRANSLATIONS
+        )
+        install(SCRIPT "${MAIW_QT_DEPLOY_SCRIPT}")
+    else()
+        message(STATUS "Private Qt runtime deployment requires Qt 6.5 or newer; skipping deployment for Qt ${Qt6Core_VERSION}")
+    endif()
 
     install(CODE "
         file(INSTALL \"${ONNXRUNTIME_LIBRARY}\"
