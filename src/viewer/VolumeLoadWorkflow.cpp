@@ -100,7 +100,9 @@ bool VolumeLoadWorkflow::isRunning() const noexcept
 
 void VolumeLoadWorkflow::handleFinished()
 {
-  AsyncResult result = watcher_.result();
+  // Consume the future result so a persistent workflow does not retain the
+  // loaded volume after signal delivery.
+  AsyncResult result = watcher_.future().takeResult();
   running_ = false;
 
   if (!result.volume)

@@ -1,20 +1,21 @@
 #include "maiw/viewer/ViewerWorkspaceWidget.h"
-#include "maiw/viewer/VolumeLoadWorkflow.h"
 
 #include "qtviewerpro/core/VolumeData.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QString>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 
 #include <cstddef>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 namespace
 {
@@ -29,96 +30,76 @@ void require(bool condition, const std::string& message)
   }
 }
 
-maiw::viewer::SharedVolume loadRealVolume(QApplication& application)
+bool hasSameOwner(const std::weak_ptr<const qvp::VolumeData>& left,
+                  const std::weak_ptr<const qvp::VolumeData>& right) noexcept
 {
-  maiw::viewer::VolumeLoadWorkflow workflow;
+  return !left.owner_before(right) && !right.owner_before(left);
+}
+
+struct LoadingSignals
+{
+  std::size_t startedCount = 0;
+  std::size_t successCount = 0;
+  std::size_t failureCount = 0;
+  bool allCompletionsOnMainThread = true;
+  bool loadingAtLastCompletion = true;
+  bool hadVolumeAtLastStart = false;
+  QString lastFailureMessage;
+};
+
+struct LoadAttempt
+{
+  bool runningAfterRequest = false;
+  bool timedOut = false;
+};
+
+LoadAttempt runLoadAttempt(maiw::viewer::ViewerWorkspaceWidget& workspace,
+                           const QString& path,
+                           const LoadingSignals& signalState)
+{
   QEventLoop eventLoop;
   QTimer watchdog;
   watchdog.setSingleShot(true);
   watchdog.setInterval(kLoadTimeoutMilliseconds);
 
-  std::size_t startedCount = 0;
-  std::size_t successCount = 0;
-  std::size_t failureCount = 0;
-  bool timedOut = false;
-  bool deliveredOnMainThread = false;
-  QString failureMessage;
-  maiw::viewer::SharedVolume volume;
+  LoadAttempt attempt;
+  const std::size_t terminalCountBefore =
+      signalState.successCount + signalState.failureCount;
 
   QObject::connect(
-      &workflow,
-      &maiw::viewer::VolumeLoadWorkflow::loadingStarted,
-      &application,
-      [&startedCount]()
-      {
-        ++startedCount;
-      });
-  QObject::connect(
-      &workflow,
-      &maiw::viewer::VolumeLoadWorkflow::loadingSucceeded,
+      &workspace,
+      &maiw::viewer::ViewerWorkspaceWidget::volumeLoadingSucceeded,
       &eventLoop,
-      [&application,
-       &eventLoop,
-       &watchdog,
-       &successCount,
-       &deliveredOnMainThread,
-       &volume](maiw::viewer::SharedVolume loadedVolume)
-      {
-        ++successCount;
-        deliveredOnMainThread =
-            QThread::currentThread() == application.thread();
-        volume = std::move(loadedVolume);
-        watchdog.stop();
-        eventLoop.quit();
-      },
-      Qt::QueuedConnection);
+      &QEventLoop::quit);
   QObject::connect(
-      &workflow,
-      &maiw::viewer::VolumeLoadWorkflow::loadingFailed,
+      &workspace,
+      &maiw::viewer::ViewerWorkspaceWidget::volumeLoadingFailed,
       &eventLoop,
-      [&eventLoop,
-       &watchdog,
-       &failureCount,
-       &failureMessage](const QString& message)
+      [&eventLoop](const QString&)
       {
-        ++failureCount;
-        failureMessage = message;
-        watchdog.stop();
         eventLoop.quit();
       });
   QObject::connect(
       &watchdog,
       &QTimer::timeout,
       &eventLoop,
-      [&eventLoop, &timedOut]()
+      [&attempt, &eventLoop]()
       {
-        timedOut = true;
+        attempt.timedOut = true;
         eventLoop.quit();
       });
 
   watchdog.start();
-  workflow.startLoading(QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH));
-  require(workflow.isRunning(),
-          "real ACDC workspace load did not enter the running state");
-  eventLoop.exec();
+  workspace.loadVolume(path);
+  attempt.runningAfterRequest = workspace.isLoading();
 
-  require(!timedOut, "timed out loading the real ACDC workspace volume");
-  require(startedCount == 1,
-          "real ACDC workspace load did not start exactly once");
-  require(successCount == 1,
-          "real ACDC workspace load did not succeed exactly once");
-  require(failureCount == 0,
-          "real ACDC workspace load failed: " + failureMessage.toStdString());
-  require(deliveredOnMainThread,
-          "real ACDC workspace load was not delivered on the main Qt thread");
-  require(!workflow.isRunning(),
-          "workflow remained running after real ACDC workspace load");
-  require(volume != nullptr,
-          "real ACDC workspace load returned a null shared volume");
-  require(volume->isValid() && !volume->isEmpty(),
-          "real ACDC workspace volume is invalid or empty");
+  if (signalState.successCount + signalState.failureCount == terminalCountBefore)
+  {
+    eventLoop.exec();
+  }
 
-  return volume;
+  watchdog.stop();
+  return attempt;
 }
 
 void requireCenterState(const maiw::viewer::ViewerWorkspaceWidget& workspace,
@@ -149,6 +130,26 @@ void requireCenterState(const maiw::viewer::ViewerWorkspaceWidget& workspace,
           context + ": coronal slice is not synchronized to center Y");
 }
 
+void requireAssignedState(const maiw::viewer::ViewerWorkspaceWidget& workspace,
+                          const std::string& context)
+{
+  require(workspace.hasVolume(), context + ": workspace has no volume");
+  require(workspace.mprViewer().hasVolume(),
+          context + ": MPR child has no volume");
+  require(workspace.volumeRenderingWidget().hasVolume(),
+          context + ": 3D child has no volume");
+}
+
+void requireEmptyState(const maiw::viewer::ViewerWorkspaceWidget& workspace,
+                       const std::string& context)
+{
+  require(!workspace.hasVolume(), context + ": workspace has a volume");
+  require(!workspace.mprViewer().hasVolume(),
+          context + ": MPR child has a volume");
+  require(!workspace.volumeRenderingWidget().hasVolume(),
+          context + ": 3D child has a volume");
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -156,93 +157,230 @@ int main(int argc, char* argv[])
   try
   {
     QApplication application(argc, argv);
-    maiw::viewer::SharedVolume callerVolume = loadRealVolume(application);
-    maiw::viewer::SharedVolume retainedExternalVolume = callerVolume;
-    const qvp::VolumeData* const volumeIdentity = callerVolume.get();
-    std::weak_ptr<const qvp::VolumeData> volumeObserver = callerVolume;
-
-    require(callerVolume.use_count() == 2,
-            "unexpected shared ownership before workspace assignment");
+    LoadingSignals signalState;
+    std::weak_ptr<const qvp::VolumeData> observerAfterDestruction;
 
     {
       maiw::viewer::ViewerWorkspaceWidget workspace;
-      const auto* const mprIdentity = &workspace.mprViewer();
-      const auto* const volumeRenderingIdentity =
-          &workspace.volumeRenderingWidget();
+      requireEmptyState(workspace, "initial state");
+      require(!workspace.isLoading(),
+              "workspace is unexpectedly loading in its initial state");
+      require(workspace.volumeObserver().expired(),
+              "empty workspace exposes a live volume observer");
 
-      workspace.setVolume(callerVolume);
-      require(workspace.hasVolume(),
-              "workspace did not accept the real ACDC volume");
-      require(workspace.mprViewer().hasVolume(),
-              "MPR child did not receive the real ACDC volume");
-      require(workspace.volumeRenderingWidget().hasVolume(),
-              "3D child did not receive the real ACDC volume");
-      require(callerVolume.use_count() == 5,
-              "workspace children did not share the existing volume instance");
-      requireCenterState(workspace, *callerVolume, "initial assignment");
+      QObject::connect(
+          &workspace,
+          &maiw::viewer::ViewerWorkspaceWidget::volumeLoadingStarted,
+          &application,
+          [&signalState, &workspace]()
+          {
+            ++signalState.startedCount;
+            signalState.hadVolumeAtLastStart = workspace.hasVolume();
+          });
+      QObject::connect(
+          &workspace,
+          &maiw::viewer::ViewerWorkspaceWidget::volumeLoadingSucceeded,
+          &application,
+          [&application, &signalState, &workspace]()
+          {
+            ++signalState.successCount;
+            signalState.allCompletionsOnMainThread =
+                signalState.allCompletionsOnMainThread &&
+                QThread::currentThread() == application.thread();
+            signalState.loadingAtLastCompletion = workspace.isLoading();
+          });
+      QObject::connect(
+          &workspace,
+          &maiw::viewer::ViewerWorkspaceWidget::volumeLoadingFailed,
+          &application,
+          [&application,
+           &signalState,
+           &workspace](const QString& message)
+          {
+            ++signalState.failureCount;
+            signalState.allCompletionsOnMainThread =
+                signalState.allCompletionsOnMainThread &&
+                QThread::currentThread() == application.thread();
+            signalState.loadingAtLastCompletion = workspace.isLoading();
+            signalState.lastFailureMessage = message;
+          });
 
-      callerVolume.reset();
-      require(workspace.hasVolume() &&
-                  workspace.mprViewer().hasVolume() &&
-                  workspace.volumeRenderingWidget().hasVolume(),
-              "workspace lost the volume after the caller released its copy");
-      require(!volumeObserver.expired() &&
-                  volumeObserver.lock().get() == volumeIdentity,
-              "workspace did not preserve the assigned volume identity");
-      require(retainedExternalVolume.use_count() == 4,
-              "caller release produced unexpected workspace ownership");
-      requireCenterState(workspace,
-                         *retainedExternalVolume,
-                         "after caller release");
+      const QString realPath =
+          QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH);
+      const LoadAttempt firstAttempt =
+          runLoadAttempt(workspace, realPath, signalState);
+      require(!firstAttempt.timedOut,
+              "initial real ACDC workspace load timed out");
+      require(firstAttempt.runningAfterRequest,
+              "initial real ACDC load did not enter the running state");
+      require(signalState.startedCount == 1,
+              "initial real ACDC load did not start exactly once");
+      require(!signalState.hadVolumeAtLastStart,
+              "initial real ACDC load started with an unexpected volume");
+      require(signalState.successCount == 1,
+              "initial real ACDC load did not succeed exactly once");
+      require(signalState.failureCount == 0,
+              "initial real ACDC load unexpectedly failed: " +
+                  signalState.lastFailureMessage.toStdString());
+      require(signalState.allCompletionsOnMainThread,
+              "initial real ACDC load was not delivered on the main Qt thread");
+      require(!signalState.loadingAtLastCompletion && !workspace.isLoading(),
+              "workspace remained loading when initial success was delivered");
+      requireAssignedState(workspace, "initial successful load");
+
+      std::weak_ptr<const qvp::VolumeData> firstObserver =
+          workspace.volumeObserver();
+      {
+        const auto firstVolume = firstObserver.lock();
+        require(firstVolume != nullptr,
+                "initial load did not expose the canonical volume observer");
+        require(firstVolume->isValid() && !firstVolume->isEmpty(),
+                "initial canonical volume is invalid or empty");
+        require(firstVolume.use_count() == 4,
+                "initial load retained unexpected shared volume ownership");
+        requireCenterState(workspace, *firstVolume, "initial successful load");
+      }
+      require(!firstObserver.expired(),
+              "workspace lost ownership after the observer released its lock");
 
       workspace.clearVolume();
-      require(!workspace.hasVolume(),
-              "workspace retained the volume after clear");
-      require(!workspace.mprViewer().hasVolume(),
-              "MPR child retained the volume after clear");
-      require(!workspace.volumeRenderingWidget().hasVolume(),
-              "3D child retained the volume after clear");
-      require(retainedExternalVolume.use_count() == 1,
-              "workspace clear retained shared volume ownership");
-      require(retainedExternalVolume.get() == volumeIdentity &&
-                  retainedExternalVolume->isValid() &&
-                  !retainedExternalVolume->isEmpty(),
-              "external volume became invalid after workspace clear");
+      requireEmptyState(workspace, "cleared state");
+      require(firstObserver.expired(),
+              "clear retained ownership of the initial loaded volume");
 
-      workspace.setVolume(retainedExternalVolume);
-      require(workspace.hasVolume() &&
-                  workspace.mprViewer().hasVolume() &&
-                  workspace.volumeRenderingWidget().hasVolume(),
-              "workspace did not accept a reassigned real volume");
-      require(retainedExternalVolume.use_count() == 4,
-              "workspace reassignment did not share the existing volume");
-      require(&workspace.mprViewer() == mprIdentity,
-              "MPR child changed during workspace assignment lifecycle");
-      require(&workspace.volumeRenderingWidget() == volumeRenderingIdentity,
-              "3D child changed during workspace assignment lifecycle");
-      requireCenterState(workspace,
-                         *retainedExternalVolume,
-                         "reassignment");
+      const LoadAttempt reloadAttempt =
+          runLoadAttempt(workspace, realPath, signalState);
+      require(!reloadAttempt.timedOut,
+              "real ACDC workspace reload timed out");
+      require(reloadAttempt.runningAfterRequest,
+              "real ACDC reload did not enter the running state");
+      require(signalState.startedCount == 2,
+              "real ACDC reload did not start exactly once");
+      require(!signalState.hadVolumeAtLastStart,
+              "reload after clear started with an unexpected volume");
+      require(signalState.successCount == 2,
+              "real ACDC reload did not succeed exactly once");
+      require(signalState.failureCount == 0,
+              "real ACDC reload unexpectedly failed: " +
+                  signalState.lastFailureMessage.toStdString());
+      require(signalState.allCompletionsOnMainThread,
+              "real ACDC reload was not delivered on the main Qt thread");
+      require(!signalState.loadingAtLastCompletion && !workspace.isLoading(),
+              "workspace remained loading when reload success was delivered");
+      requireAssignedState(workspace, "successful reload");
+
+      const std::weak_ptr<const qvp::VolumeData> reloadedObserver =
+          workspace.volumeObserver();
+      require(!hasSameOwner(firstObserver, reloadedObserver),
+              "reload reused the released initial ownership control block");
+
+      const LoadAttempt replacementAttempt =
+          runLoadAttempt(workspace, realPath, signalState);
+      require(!replacementAttempt.timedOut,
+              "successful real ACDC replacement timed out");
+      require(replacementAttempt.runningAfterRequest,
+              "successful replacement did not enter the running state");
+      require(signalState.startedCount == 3,
+              "successful replacement did not start exactly once");
+      require(signalState.hadVolumeAtLastStart,
+              "successful replacement cleared the displayed volume at start");
+      require(signalState.successCount == 3,
+              "successful replacement did not succeed exactly once");
+      require(signalState.failureCount == 0,
+              "successful replacement unexpectedly failed: " +
+                  signalState.lastFailureMessage.toStdString());
+      require(signalState.allCompletionsOnMainThread,
+              "successful replacement was not delivered on the main thread");
+      require(!signalState.loadingAtLastCompletion && !workspace.isLoading(),
+              "workspace remained loading when replacement succeeded");
+      requireAssignedState(workspace, "successful replacement");
+      require(reloadedObserver.expired(),
+              "successful replacement retained the previous volume");
+
+      const std::weak_ptr<const qvp::VolumeData> replacementObserver =
+          workspace.volumeObserver();
+      require(!hasSameOwner(reloadedObserver, replacementObserver),
+              "successful replacement reused the prior ownership control block");
+
+      qvp::VoxelIndex3D positionBeforeFailure;
+      const qvp::VolumeData* identityBeforeFailure = nullptr;
+      {
+        const auto replacementVolume = replacementObserver.lock();
+        require(replacementVolume != nullptr,
+                "replacement did not expose the canonical volume observer");
+        require(replacementVolume.use_count() == 4,
+                "replacement retained unexpected shared volume ownership");
+        requireCenterState(workspace,
+                           *replacementVolume,
+                           "successful replacement");
+        positionBeforeFailure = workspace.mprViewer().voxelPosition();
+        identityBeforeFailure = replacementVolume.get();
+      }
+
+      const QString invalidPath =
+          QDir::temp().filePath(
+              QStringLiteral("maiw-missing-workspace-%1.nii.gz")
+                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+      require(!QFileInfo::exists(invalidPath),
+              "generated invalid replacement path unexpectedly exists");
+
+      const LoadAttempt failedAttempt =
+          runLoadAttempt(workspace, invalidPath, signalState);
+      require(!failedAttempt.timedOut,
+              "invalid replacement load timed out");
+      require(failedAttempt.runningAfterRequest,
+              "invalid replacement did not enter the running state");
+      require(signalState.startedCount == 4,
+              "invalid replacement did not start exactly once");
+      require(signalState.hadVolumeAtLastStart,
+              "invalid replacement cleared the displayed volume at start");
+      require(signalState.successCount == 3,
+              "invalid replacement unexpectedly reported success");
+      require(signalState.failureCount == 1,
+              "invalid replacement did not fail exactly once");
+      require(!signalState.lastFailureMessage.isEmpty(),
+              "invalid replacement did not provide a diagnostic");
+      require(signalState.allCompletionsOnMainThread,
+              "invalid replacement failure was not delivered on the main thread");
+      require(!signalState.loadingAtLastCompletion && !workspace.isLoading(),
+              "workspace remained loading when replacement failure was delivered");
+      requireAssignedState(workspace, "failed replacement state");
+
+      const std::weak_ptr<const qvp::VolumeData> preservedObserver =
+          workspace.volumeObserver();
+      require(hasSameOwner(replacementObserver, preservedObserver),
+              "failed replacement changed canonical volume ownership");
+      {
+        const auto preservedVolume = preservedObserver.lock();
+        require(preservedVolume != nullptr &&
+                    preservedVolume.get() == identityBeforeFailure,
+                "failed replacement changed the displayed volume identity");
+        requireCenterState(workspace,
+                           *preservedVolume,
+                           "failed replacement state");
+        const qvp::VoxelIndex3D positionAfterFailure =
+            workspace.mprViewer().voxelPosition();
+        require(positionAfterFailure.x == positionBeforeFailure.x &&
+                    positionAfterFailure.y == positionBeforeFailure.y &&
+                    positionAfterFailure.z == positionBeforeFailure.z,
+                "failed replacement changed MPR navigation");
+      }
+
+      observerAfterDestruction = workspace.volumeObserver();
+      require(!observerAfterDestruction.expired(),
+              "workspace lost the reloaded volume before destruction");
     }
 
-    require(retainedExternalVolume != nullptr &&
-                retainedExternalVolume.get() == volumeIdentity &&
-                retainedExternalVolume->isValid() &&
-                !retainedExternalVolume->isEmpty(),
-            "external volume became invalid after workspace destruction");
-    require(retainedExternalVolume.use_count() == 1,
-            "workspace destruction retained shared volume ownership");
+    require(observerAfterDestruction.expired(),
+            "workspace destruction retained loaded volume ownership");
 
-    retainedExternalVolume.reset();
-    require(volumeObserver.expired(),
-            "real ACDC volume remained owned after all copies were released");
-
-    std::cout << "Real-volume viewer workspace widget test passed." << '\n';
+    std::cout << "Real-volume asynchronous viewer workspace test passed."
+              << '\n';
     return 0;
   }
   catch (const std::exception& error)
   {
-    std::cerr << "Real-volume viewer workspace widget test failed: "
+    std::cerr << "Real-volume asynchronous viewer workspace test failed: "
               << error.what() << '\n';
     return 1;
   }

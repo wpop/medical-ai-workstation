@@ -1,9 +1,13 @@
 #pragma once
 
 #include "maiw/viewer/MprViewerWidget.h"
+#include "maiw/viewer/VolumeLoadWorkflow.h"
 #include "maiw/viewer/VolumeRenderingWidget.h"
 
+#include <QString>
 #include <QWidget>
+
+#include <memory>
 
 namespace maiw::viewer
 {
@@ -13,10 +17,13 @@ namespace maiw::viewer
  *
  * The workspace owns the canonical SharedVolume. Its MPR child observes that
  * instance without ownership, while its 3D child shares ownership of the same
- * instance. Both child widgets are managed through Qt parent-child ownership.
+ * instance. An owned VolumeLoadWorkflow coordinates asynchronous replacement.
+ * All composed objects are managed through Qt parent-child ownership.
  */
 class ViewerWorkspaceWidget final : public QWidget
 {
+  Q_OBJECT
+
 public:
   /**
    * @brief Construct an empty viewer workspace.
@@ -26,9 +33,27 @@ public:
   explicit ViewerWorkspaceWidget(QWidget* parent = nullptr);
 
   /**
-   * @brief Clear child assignments before releasing the canonical volume.
+   * @brief Clear viewer assignments and safely destroy the owned workflow.
+   *
+   * Any active load is awaited by the workflow's destruction contract.
    */
   ~ViewerWorkspaceWidget() override;
+
+  /**
+   * @brief Start asynchronous loading of one medical volume.
+   *
+   * The currently displayed volume remains assigned while loading. Empty paths
+   * and overlapping requests are rejected through volumeLoadingFailed(),
+   * consistently with VolumeLoadWorkflow.
+   *
+   * @param path Path to the medical volume or supported series directory.
+   */
+  void loadVolume(const QString& path);
+
+  /**
+   * @brief Return true while an asynchronous volume load is active.
+   */
+  [[nodiscard]] bool isLoading() const noexcept;
 
   /**
    * @brief Assign one shared immutable volume to both viewer modes.
@@ -45,7 +70,8 @@ public:
    * @brief Clear MPR first, 3D rendering second, and ownership last.
    *
    * This order guarantees that the canonical SharedVolume outlives the MPR
-   * child's non-owning observation. The operation is idempotent.
+   * child's non-owning observation. The operation is idempotent and does not
+   * cancel an active asynchronous load.
    */
   void clearVolume();
 
@@ -53,6 +79,14 @@ public:
    * @brief Return whether a valid, non-empty volume is assigned.
    */
   [[nodiscard]] bool hasVolume() const noexcept;
+
+  /**
+   * @brief Return a non-owning observer of the canonical immutable volume.
+   *
+   * The observer expires after replacement, clearing, or workspace destruction
+   * unless another owner independently retains the same volume.
+   */
+  [[nodiscard]] std::weak_ptr<const qvp::VolumeData> volumeObserver() const noexcept;
 
   /**
    * @brief Return the stable MPR child widget.
@@ -64,10 +98,31 @@ public:
    */
   [[nodiscard]] const VolumeRenderingWidget& volumeRenderingWidget() const noexcept;
 
+signals:
+  /**
+   * @brief Emitted when asynchronous medical-volume loading starts.
+   */
+  void volumeLoadingStarted();
+
+  /**
+   * @brief Emitted after a loaded volume has been assigned to both viewer modes.
+   */
+  void volumeLoadingSucceeded();
+
+  /**
+   * @brief Emitted when a load request cannot replace the displayed volume.
+   *
+   * @param message User-presentable error description.
+   */
+  void volumeLoadingFailed(const QString& message);
+
 private:
+  void handleVolumeLoaded(SharedVolume volume);
+
   SharedVolume volume_;
 
-  // Qt parent ownership manages the child viewers; these pointers are non-owning.
+  // Qt parent ownership manages these objects; the pointers are non-owning.
+  VolumeLoadWorkflow* loadWorkflow_ = nullptr;
   MprViewerWidget* mprViewer_ = nullptr;
   VolumeRenderingWidget* volumeRenderingWidget_ = nullptr;
 };

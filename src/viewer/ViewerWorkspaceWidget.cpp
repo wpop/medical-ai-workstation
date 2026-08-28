@@ -13,6 +13,21 @@ namespace maiw::viewer
 ViewerWorkspaceWidget::ViewerWorkspaceWidget(QWidget* parent)
     : QWidget(parent)
 {
+  loadWorkflow_ = new VolumeLoadWorkflow(this);
+
+  connect(loadWorkflow_,
+          &VolumeLoadWorkflow::loadingStarted,
+          this,
+          &ViewerWorkspaceWidget::volumeLoadingStarted);
+  connect(loadWorkflow_,
+          &VolumeLoadWorkflow::loadingSucceeded,
+          this,
+          &ViewerWorkspaceWidget::handleVolumeLoaded);
+  connect(loadWorkflow_,
+          &VolumeLoadWorkflow::loadingFailed,
+          this,
+          &ViewerWorkspaceWidget::volumeLoadingFailed);
+
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
 
@@ -29,6 +44,16 @@ ViewerWorkspaceWidget::ViewerWorkspaceWidget(QWidget* parent)
 ViewerWorkspaceWidget::~ViewerWorkspaceWidget()
 {
   clearVolume();
+}
+
+void ViewerWorkspaceWidget::loadVolume(const QString& path)
+{
+  loadWorkflow_->startLoading(path);
+}
+
+bool ViewerWorkspaceWidget::isLoading() const noexcept
+{
+  return loadWorkflow_->isRunning();
 }
 
 void ViewerWorkspaceWidget::setVolume(SharedVolume volume)
@@ -57,6 +82,12 @@ bool ViewerWorkspaceWidget::hasVolume() const noexcept
   return volume_ != nullptr;
 }
 
+std::weak_ptr<const qvp::VolumeData>
+ViewerWorkspaceWidget::volumeObserver() const noexcept
+{
+  return volume_;
+}
+
 const MprViewerWidget& ViewerWorkspaceWidget::mprViewer() const noexcept
 {
   return *mprViewer_;
@@ -66,6 +97,19 @@ const VolumeRenderingWidget&
 ViewerWorkspaceWidget::volumeRenderingWidget() const noexcept
 {
   return *volumeRenderingWidget_;
+}
+
+void ViewerWorkspaceWidget::handleVolumeLoaded(SharedVolume volume)
+{
+  if (!volume || !volume->isValid() || volume->isEmpty())
+  {
+    emit volumeLoadingFailed(
+        QStringLiteral("The loaded medical volume is invalid or empty."));
+    return;
+  }
+
+  setVolume(std::move(volume));
+  emit volumeLoadingSucceeded();
 }
 
 } // namespace maiw::viewer
