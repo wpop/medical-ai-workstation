@@ -69,7 +69,14 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
 
     add_library(maiw-viewer-widgets
         include/maiw/viewer/SliceViewerWidget.h
+        include/maiw/viewer/VolumeLoadWorkflow.h
         src/viewer/SliceViewerWidget.cpp
+        src/viewer/VolumeLoadWorkflow.cpp
+    )
+
+    set_target_properties(maiw-viewer-widgets
+        PROPERTIES
+            AUTOMOC ON
     )
 
     target_include_directories(maiw-viewer-widgets
@@ -80,10 +87,13 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
     target_link_libraries(maiw-viewer-widgets
         PUBLIC
             qt-viewer-pro-core
+            Qt6::Core
             Qt6::Widgets
         PRIVATE
+            qt-viewer-pro-io
             qt-viewer-pro-processing
             qt-viewer-pro-render
+            Qt6::Concurrent
     )
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -395,6 +405,67 @@ if(BUILD_TESTING)
             PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
+
+        add_executable(test-volume-load-workflow
+            tests/viewer/TestVolumeLoadWorkflow.cpp
+        )
+
+        target_link_libraries(test-volume-load-workflow
+            PRIVATE
+                maiw-viewer-widgets
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-volume-load-workflow
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME volume-load-workflow
+            COMMAND test-volume-load-workflow
+        )
+
+        if(MAIW_CARDIAC_MRI_REAL_ED_PATH
+           AND EXISTS "${MAIW_CARDIAC_MRI_REAL_ED_PATH}")
+            add_executable(test-slice-viewer-widget-real-volume
+                tests/viewer/TestSliceViewerWidgetRealVolume.cpp
+            )
+
+            target_compile_definitions(test-slice-viewer-widget-real-volume
+                PRIVATE
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+            )
+
+            target_link_libraries(test-slice-viewer-widget-real-volume
+                PRIVATE
+                    maiw-viewer-widgets
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-slice-viewer-widget-real-volume
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            add_test(
+                NAME slice-viewer-widget-real-volume
+                COMMAND test-slice-viewer-widget-real-volume
+            )
+
+            set_tests_properties(slice-viewer-widget-real-volume
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+        else()
+            message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH is not set or does not exist; real-volume slice viewer test disabled")
+        endif()
 
         add_executable(test-cardiac-mri-preprocessing
             tests/cardiac/TestCardiacMriPreprocessing.cpp
