@@ -12,6 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+include(GNUInstallDirs)
 
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime C++ distribution")
 set(MAIW_CARDIAC_MRI_PACKAGE_DIR "" CACHE PATH "External cardiac MRI deployment package root")
@@ -21,6 +22,17 @@ set(MAIW_CARDIAC_MRI_REAL_ED_PATH "" CACHE FILEPATH "Optional real standalone ED
 set(MAIW_CARDIAC_MRI_REAL_ES_PATH "" CACHE FILEPATH "Optional real standalone ES volume for cardiac preprocessing smoke testing")
 set(MAIW_QTVIEWERPRO_SOURCE_DIR "" CACHE PATH "Local qt-viewer-pro source directory")
 option(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION "Enable local qt-viewer-pro core/IO source integration" OFF)
+
+if(MAIW_CARDIAC_MRI_PACKAGE_DIR)
+    foreach(MAIW_CARDIAC_MRI_RUNTIME_ASSET
+            classifier.onnx
+            deployment.json
+            class_mapping.json)
+        if(NOT EXISTS "${MAIW_CARDIAC_MRI_PACKAGE_DIR}/${MAIW_CARDIAC_MRI_RUNTIME_ASSET}")
+            message(FATAL_ERROR "Required cardiac MRI runtime asset is missing: ${MAIW_CARDIAC_MRI_PACKAGE_DIR}/${MAIW_CARDIAC_MRI_RUNTIME_ASSET}")
+        endif()
+    endforeach()
+endif()
 
 if(NOT ONNXRUNTIME_ROOT)
     message(FATAL_ERROR "ONNXRUNTIME_ROOT must point to an ONNX Runtime C++ distribution")
@@ -250,10 +262,57 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         )
     endif()
 
+    file(RELATIVE_PATH MAIW_INSTALL_LIBDIR_FROM_BINDIR
+        "${CMAKE_INSTALL_FULL_BINDIR}"
+        "${CMAKE_INSTALL_FULL_LIBDIR}"
+    )
+    file(RELATIVE_PATH MAIW_INSTALL_DATADIR_FROM_BINDIR
+        "${CMAKE_INSTALL_FULL_BINDIR}"
+        "${CMAKE_INSTALL_FULL_DATADIR}"
+    )
+
+    target_compile_definitions(medical-ai-workstation
+        PRIVATE
+            MAIW_INSTALL_DATADIR_FROM_BINDIR="${MAIW_INSTALL_DATADIR_FROM_BINDIR}"
+    )
+
     set_target_properties(medical-ai-workstation
         PROPERTIES
             BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            INSTALL_RPATH "\$ORIGIN/${MAIW_INSTALL_LIBDIR_FROM_BINDIR}"
+            INSTALL_RPATH_USE_LINK_PATH FALSE
     )
+
+    install(TARGETS medical-ai-workstation
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+
+    if(Qt6Core_VERSION VERSION_GREATER_EQUAL 6.5)
+        qt_generate_deploy_app_script(
+            TARGET medical-ai-workstation
+            OUTPUT_SCRIPT MAIW_QT_DEPLOY_SCRIPT
+            NO_TRANSLATIONS
+        )
+        install(SCRIPT "${MAIW_QT_DEPLOY_SCRIPT}")
+    else()
+        message(STATUS "Private Qt runtime deployment requires Qt 6.5 or newer; skipping deployment for Qt ${Qt6Core_VERSION}")
+    endif()
+
+    install(CODE "
+        file(INSTALL \"${ONNXRUNTIME_LIBRARY}\"
+            DESTINATION \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}\"
+            FOLLOW_SYMLINK_CHAIN
+        )
+    ")
+
+    if(MAIW_CARDIAC_MRI_PACKAGE_DIR)
+        install(FILES
+            "${MAIW_CARDIAC_MRI_PACKAGE_DIR}/classifier.onnx"
+            "${MAIW_CARDIAC_MRI_PACKAGE_DIR}/deployment.json"
+            "${MAIW_CARDIAC_MRI_PACKAGE_DIR}/class_mapping.json"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/medical-ai-workstation/cardiac_mri_pathology"
+        )
+    endif()
 endif()
 
 if(BUILD_TESTING)
