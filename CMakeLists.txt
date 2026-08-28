@@ -589,6 +589,29 @@ if(BUILD_TESTING)
                 PROPERTIES
                     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
+
+            add_executable(test-volume-rendering-widget-gpu
+                tests/viewer/TestVolumeRenderingWidgetGpu.cpp
+            )
+
+            target_compile_definitions(test-volume-rendering-widget-gpu
+                PRIVATE
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+            )
+
+            target_link_libraries(test-volume-rendering-widget-gpu
+                PRIVATE
+                    maiw-viewer-widgets
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-volume-rendering-widget-gpu
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
         else()
             message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH is not set or does not exist; real-volume viewer tests disabled")
         endif()
