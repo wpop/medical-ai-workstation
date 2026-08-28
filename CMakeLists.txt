@@ -71,9 +71,11 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         include/maiw/viewer/MprViewerWidget.h
         include/maiw/viewer/SliceViewerWidget.h
         include/maiw/viewer/VolumeLoadWorkflow.h
+        include/maiw/viewer/VolumeRenderingWidget.h
         src/viewer/MprViewerWidget.cpp
         src/viewer/SliceViewerWidget.cpp
         src/viewer/VolumeLoadWorkflow.cpp
+        src/viewer/VolumeRenderingWidget.cpp
     )
 
     set_target_properties(maiw-viewer-widgets
@@ -459,6 +461,34 @@ if(BUILD_TESTING)
             COMMAND test-volume-load-workflow
         )
 
+        add_executable(test-volume-rendering-widget
+            tests/viewer/TestVolumeRenderingWidget.cpp
+        )
+
+        target_link_libraries(test-volume-rendering-widget
+            PRIVATE
+                maiw-viewer-widgets
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-volume-rendering-widget
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME volume-rendering-widget
+            COMMAND test-volume-rendering-widget
+        )
+
+        set_tests_properties(volume-rendering-widget
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+
         if(MAIW_CARDIAC_MRI_REAL_ED_PATH
            AND EXISTS "${MAIW_CARDIAC_MRI_REAL_ED_PATH}")
             add_executable(test-slice-viewer-widget-real-volume
@@ -523,6 +553,39 @@ if(BUILD_TESTING)
             )
 
             set_tests_properties(mpr-viewer-widget-real-volume
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+
+            add_executable(test-volume-rendering-widget-real-volume
+                tests/viewer/TestVolumeRenderingWidgetRealVolume.cpp
+            )
+
+            target_compile_definitions(test-volume-rendering-widget-real-volume
+                PRIVATE
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+            )
+
+            target_link_libraries(test-volume-rendering-widget-real-volume
+                PRIVATE
+                    maiw-viewer-widgets
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-volume-rendering-widget-real-volume
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            add_test(
+                NAME volume-rendering-widget-real-volume
+                COMMAND test-volume-rendering-widget-real-volume
+            )
+
+            set_tests_properties(volume-rendering-widget-real-volume
                 PROPERTIES
                     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
