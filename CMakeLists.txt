@@ -68,8 +68,10 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
     )
 
     add_library(maiw-viewer-widgets
+        include/maiw/viewer/MprViewerWidget.h
         include/maiw/viewer/SliceViewerWidget.h
         include/maiw/viewer/VolumeLoadWorkflow.h
+        src/viewer/MprViewerWidget.cpp
         src/viewer/SliceViewerWidget.cpp
         src/viewer/VolumeLoadWorkflow.cpp
     )
@@ -406,6 +408,34 @@ if(BUILD_TESTING)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
 
+        add_executable(test-mpr-viewer-widget
+            tests/viewer/TestMprViewerWidget.cpp
+        )
+
+        target_link_libraries(test-mpr-viewer-widget
+            PRIVATE
+                maiw-viewer-widgets
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-mpr-viewer-widget
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME mpr-viewer-widget
+            COMMAND test-mpr-viewer-widget
+        )
+
+        set_tests_properties(mpr-viewer-widget
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+
         add_executable(test-volume-load-workflow
             tests/viewer/TestVolumeLoadWorkflow.cpp
         )
@@ -463,8 +493,41 @@ if(BUILD_TESTING)
                 PROPERTIES
                     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
+
+            add_executable(test-mpr-viewer-widget-real-volume
+                tests/viewer/TestMprViewerWidgetRealVolume.cpp
+            )
+
+            target_compile_definitions(test-mpr-viewer-widget-real-volume
+                PRIVATE
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+            )
+
+            target_link_libraries(test-mpr-viewer-widget-real-volume
+                PRIVATE
+                    maiw-viewer-widgets
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-mpr-viewer-widget-real-volume
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            add_test(
+                NAME mpr-viewer-widget-real-volume
+                COMMAND test-mpr-viewer-widget-real-volume
+            )
+
+            set_tests_properties(mpr-viewer-widget-real-volume
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
         else()
-            message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH is not set or does not exist; real-volume slice viewer test disabled")
+            message(STATUS "MAIW_CARDIAC_MRI_REAL_ED_PATH is not set or does not exist; real-volume viewer tests disabled")
         endif()
 
         add_executable(test-cardiac-mri-preprocessing
