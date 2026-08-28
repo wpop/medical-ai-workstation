@@ -67,6 +67,34 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
             Qt6::Core
     )
 
+    add_library(maiw-viewer-widgets
+        include/maiw/viewer/SliceViewerWidget.h
+        src/viewer/SliceViewerWidget.cpp
+    )
+
+    target_include_directories(maiw-viewer-widgets
+        PUBLIC
+            include
+    )
+
+    target_link_libraries(maiw-viewer-widgets
+        PUBLIC
+            qt-viewer-pro-core
+            Qt6::Widgets
+        PRIVATE
+            qt-viewer-pro-processing
+            qt-viewer-pro-render
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(maiw-viewer-widgets
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
     if(BUILD_TESTING)
         set(MAIW_QTVIEWERPRO_UPSTREAM_TESTS
             test-volume-data
@@ -340,6 +368,34 @@ if(BUILD_TESTING)
     )
 
     if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
+        add_executable(test-slice-viewer-widget
+            tests/viewer/TestSliceViewerWidget.cpp
+        )
+
+        target_link_libraries(test-slice-viewer-widget
+            PRIVATE
+                maiw-viewer-widgets
+        )
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test-slice-viewer-widget
+                PRIVATE
+                    -Wall
+                    -Wextra
+                    -Wpedantic
+            )
+        endif()
+
+        add_test(
+            NAME slice-viewer-widget
+            COMMAND test-slice-viewer-widget
+        )
+
+        set_tests_properties(slice-viewer-widget
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+
         add_executable(test-cardiac-mri-preprocessing
             tests/cardiac/TestCardiacMriPreprocessing.cpp
         )
