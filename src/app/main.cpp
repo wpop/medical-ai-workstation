@@ -21,16 +21,40 @@ namespace
 
 /**
  * @brief Return the deployment-package command-line option.
- *
- * Phase 8 intentionally uses an explicit runtime path rather than introducing
- * package discovery, installation, or deployment-management infrastructure.
  */
 QCommandLineOption cardiacPackageOption()
 {
   return QCommandLineOption(
       QStringList{QStringLiteral("cardiac-package")},
-      QStringLiteral("Path to the cardiac MRI deployment package."),
+      QStringLiteral("Override the installed cardiac MRI deployment package path."),
       QStringLiteral("path"));
+}
+
+/**
+ * @brief Resolve the explicit or install-relative cardiac deployment package path.
+ *
+ * @param commandLinePath Parsed value of the --cardiac-package option.
+ * @return The explicit non-empty path, or the package path relative to the
+ *         installed application executable.
+ */
+std::filesystem::path resolveCardiacPackagePath(const QString& commandLinePath)
+{
+  const QString explicitPath = commandLinePath.trimmed();
+  if (!explicitPath.isEmpty())
+  {
+    return std::filesystem::path{explicitPath.toStdString()};
+  }
+
+  const auto applicationDirectory =
+      std::filesystem::path{QCoreApplication::applicationDirPath().toStdString()};
+  const auto relativeDataDirectory =
+      std::filesystem::path{MAIW_INSTALL_DATADIR_FROM_BINDIR}.lexically_normal();
+
+  return (applicationDirectory
+          / relativeDataDirectory
+          / "medical-ai-workstation"
+          / "cardiac_mri_pathology")
+      .lexically_normal();
 }
 
 } // namespace
@@ -52,17 +76,8 @@ int main(int argc, char* argv[])
   parser.addOption(packageOption);
   parser.process(application);
 
-  const QString packagePath = parser.value(packageOption).trimmed();
-  if (packagePath.isEmpty())
-  {
-    QMessageBox::critical(
-        nullptr,
-        QStringLiteral("Configuration Error"),
-        QStringLiteral(
-            "The cardiac MRI deployment package must be supplied with "
-            "--cardiac-package <path>."));
-    return EXIT_FAILURE;
-  }
+  const std::filesystem::path packagePath =
+      resolveCardiacPackagePath(parser.value(packageOption));
 
   try
   {
@@ -73,7 +88,7 @@ int main(int argc, char* argv[])
      */
     auto metadata =
         maiw::cardiac::CardiacMriDeploymentMetadata::load(
-            std::filesystem::path{packagePath.toStdString()});
+            packagePath);
 
     const auto classNames = metadata.classNames();
 
