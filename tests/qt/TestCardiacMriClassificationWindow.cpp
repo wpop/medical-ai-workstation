@@ -22,9 +22,12 @@
 namespace
 {
 
-using maiw::cardiac::CardiacMriClassificationResult;
 using maiw::cardiac::CardiacMriDeploymentMetadata;
 using maiw::qt::CardiacMriClassificationWindow;
+
+constexpr int kRealClassificationTimeoutMilliseconds = 30000;
+const QString kRequiredPathsError =
+    QStringLiteral("Both ED and ES medical volume paths are required.");
 
 void require(bool condition, const std::string& message)
 {
@@ -82,6 +85,30 @@ int main(int argc, char* argv[])
     require(!QFileInfo::exists(invalidEsPath),
             "generated invalid ES path unexpectedly exists");
 
+    bool synchronousFailureReceived = false;
+    QString synchronousFailureMessage;
+    const auto synchronousFailureConnection = QObject::connect(
+        &workflow,
+        &maiw::qt::CardiacMriClassificationWorkflow::classificationFailed,
+        &application,
+        [&synchronousFailureReceived, &synchronousFailureMessage](const QString& message)
+        {
+          synchronousFailureReceived = true;
+          synchronousFailureMessage = message;
+        });
+
+    workflow.startClassification(QString(), invalidEsPath);
+    require(synchronousFailureReceived,
+            "empty required path did not emit a synchronous validation failure");
+    require(synchronousFailureMessage == kRequiredPathsError,
+            "empty required path produced an unexpected validation failure");
+    require(!workflow.isRunning(),
+            "empty required path left the workflow running");
+    requireControlsEnabled(window, true, "synchronous validation failure state");
+    require(window.resultWidget()->statusText() == synchronousFailureMessage,
+            "synchronous validation failure was not forwarded to the result widget");
+    QObject::disconnect(synchronousFailureConnection);
+
     QEventLoop failureEventLoop;
     bool failureReceived = false;
     QString failureMessage;
@@ -116,18 +143,64 @@ int main(int argc, char* argv[])
     require(window.resultWidget()->statusText() == failureMessage,
             "controlled failure was not forwarded to the result widget");
 
-    const CardiacMriClassificationResult::RawLogits logits{
-        -1.0F, 0.0F, 2.0F, 1.0F, -0.5F};
-    const CardiacMriClassificationResult result =
-        CardiacMriClassificationResult::fromLogits(logits, metadata.classNames());
+#if defined(MAIW_CARDIAC_MRI_REAL_ED_PATH) && defined(MAIW_CARDIAC_MRI_REAL_ES_PATH)
+    const QString realEdPath = QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH);
+    const QString realEsPath = QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ES_PATH);
+    QEventLoop successEventLoop;
+    bool successReceived = false;
+    QString successfulClassName;
+    QString unexpectedFailure;
 
-    workflow.classificationSucceeded(result);
-    requireControlsEnabled(window, true, "classification success state");
-    require(window.resultWidget()->predictedClassText() ==
-                QString::fromStdString(result.predictedClassName()),
-            "successful result was not forwarded to the result widget");
+    const auto successConnection = QObject::connect(
+        &workflow,
+        &maiw::qt::CardiacMriClassificationWorkflow::classificationSucceeded,
+        &successEventLoop,
+        [&successEventLoop, &successReceived, &successfulClassName](
+            const maiw::cardiac::CardiacMriClassificationResult& result)
+        {
+          successReceived = true;
+          successfulClassName = QString::fromStdString(result.predictedClassName());
+          successEventLoop.quit();
+        });
+    const auto unexpectedFailureConnection = QObject::connect(
+        &workflow,
+        &maiw::qt::CardiacMriClassificationWorkflow::classificationFailed,
+        &successEventLoop,
+        [&successEventLoop, &unexpectedFailure](const QString& message)
+        {
+          unexpectedFailure = message;
+          successEventLoop.quit();
+        });
+
+    workflow.startClassification(realEdPath, realEsPath);
+    require(workflow.isRunning(),
+            "real window classification did not enter the running state");
+    requireControlsEnabled(window, false, "real classification started state");
+
+    QTimer successWatchdog;
+    successWatchdog.setSingleShot(true);
+    successWatchdog.setInterval(kRealClassificationTimeoutMilliseconds);
+    QObject::connect(&successWatchdog,
+                     &QTimer::timeout,
+                     &successEventLoop,
+                     &QEventLoop::quit);
+    successWatchdog.start();
+    successEventLoop.exec();
+
+    QObject::disconnect(successConnection);
+    QObject::disconnect(unexpectedFailureConnection);
+    require(unexpectedFailure.isEmpty(),
+            "real window classification failed: " + unexpectedFailure.toStdString());
+    require(successReceived,
+            "timed out waiting for real window classification success");
+    require(!workflow.isRunning(),
+            "workflow remained running after real window classification success");
+    requireControlsEnabled(window, true, "real classification success state");
+    require(window.resultWidget()->predictedClassText() == successfulClassName,
+            "real successful result was not forwarded to the result widget");
     require(window.resultWidget()->statusText().isEmpty(),
-            "result widget retained an unexpected success status");
+            "result widget retained an unexpected status after real success");
+#endif
 
     std::cout << "Cardiac MRI classification window test passed." << '\n';
     return 0;

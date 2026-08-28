@@ -342,6 +342,14 @@ if(BUILD_TESTING)
                     MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
             )
 
+            if(MAIW_CARDIAC_MRI_REAL_ED_PATH AND MAIW_CARDIAC_MRI_REAL_ES_PATH)
+                target_compile_definitions(test-cardiac-mri-classification-window
+                    PRIVATE
+                        MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                        MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+                )
+            endif()
+
             target_link_libraries(test-cardiac-mri-classification-window
                 PRIVATE
                     maiw-cardiac-classification-workflow
@@ -428,6 +436,7 @@ if(BUILD_TESTING)
                     maiw-cardiac-classification
                     qt-viewer-pro-io
                     Qt6::Core
+                    nlohmann_json::nlohmann_json
             )
 
             if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -482,6 +491,47 @@ if(BUILD_TESTING)
             add_test(
                 NAME cardiac-mri-classification-workflow
                 COMMAND test-cardiac-mri-classification-workflow
+            )
+
+            add_executable(test-cardiac-mri-classification-shutdown
+                tests/qt/TestCardiacMriClassificationShutdown.cpp
+            )
+
+            target_compile_definitions(test-cardiac-mri-classification-shutdown
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                    MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                    MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+            )
+
+            target_link_libraries(test-cardiac-mri-classification-shutdown
+                PRIVATE
+                    maiw-cardiac-classification-workflow
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-cardiac-mri-classification-shutdown
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-cardiac-mri-classification-shutdown
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME cardiac-mri-classification-shutdown
+                COMMAND test-cardiac-mri-classification-shutdown
+            )
+
+            set_tests_properties(cardiac-mri-classification-shutdown
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                    TIMEOUT 30
             )
         else()
             message(STATUS "Cardiac package or real ED/ES paths are not set; cardiac classification service/workflow tests disabled")
