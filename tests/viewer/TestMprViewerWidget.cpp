@@ -37,6 +37,10 @@ void requireEmptyViewer(const maiw::viewer::SliceViewerWidget& viewer,
           context + ": slice count is not zero");
   require(viewer.sliceIndex() == 0,
           context + ": slice index is not zero");
+  require(!viewer.crosshairPosition().has_value(),
+          context + ": crosshair is unexpectedly visible");
+  require(viewer.imageSize().isEmpty(),
+          context + ": slice image is unexpectedly available");
 }
 
 void requireEmptyState(const maiw::viewer::MprViewerWidget& widget,
@@ -72,6 +76,14 @@ int main(int argc, char* argv[])
       const auto maximum = std::numeric_limits<std::size_t>::max();
       widget.setVoxelPosition(qvp::VoxelIndex3D{maximum, maximum, maximum});
       requireEmptyState(widget, "empty navigation state");
+
+      widget.setPositionFromImagePoint(qvp::SliceOrientation::Axial,
+                                       QPointF(12.5, 24.5));
+      widget.setPositionFromImagePoint(qvp::SliceOrientation::Sagittal,
+                                       QPointF(-1.0, -1.0));
+      widget.setPositionFromImagePoint(qvp::SliceOrientation::Coronal,
+                                       QPointF(maximum, maximum));
+      requireEmptyState(widget, "empty image-point navigation state");
 
       widget.clearVolume();
       widget.clearVolume();

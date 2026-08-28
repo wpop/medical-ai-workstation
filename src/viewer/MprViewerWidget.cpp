@@ -6,6 +6,34 @@
 #include <QHBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+
+namespace
+{
+
+std::size_t clampedImageCoordinate(double coordinate, std::size_t count) noexcept
+{
+  if (count == 0 || !std::isfinite(coordinate) || coordinate <= 0.0)
+  {
+    return 0;
+  }
+
+  const double lastIndex = static_cast<double>(count - 1);
+  if (coordinate >= lastIndex)
+  {
+    return count - 1;
+  }
+
+  return static_cast<std::size_t>(coordinate);
+}
+
+QPointF pixelCenter(std::size_t x, std::size_t y)
+{
+  return QPointF(static_cast<double>(x) + 0.5,
+                 static_cast<double>(y) + 0.5);
+}
+
+} // namespace
 
 namespace maiw::viewer
 {
@@ -47,7 +75,7 @@ void MprViewerWidget::setVolume(const qvp::VolumeData* volume)
   axialViewer_->setVolume(volume_);
   sagittalViewer_->setVolume(volume_);
   coronalViewer_->setVolume(volume_);
-  synchronizeSliceIndices();
+  synchronizeViews();
 }
 
 void MprViewerWidget::clearVolume()
@@ -68,12 +96,39 @@ void MprViewerWidget::setVoxelPosition(qvp::VoxelIndex3D position)
 {
   voxelPosition_ = position;
   clampVoxelPosition();
-  synchronizeSliceIndices();
+  synchronizeViews();
 }
 
 qvp::VoxelIndex3D MprViewerWidget::voxelPosition() const noexcept
 {
   return voxelPosition_;
+}
+
+void MprViewerWidget::setPositionFromImagePoint(qvp::SliceOrientation orientation,
+                                                QPointF imagePoint)
+{
+  if (!hasUsableVolume())
+  {
+    return;
+  }
+
+  switch (orientation)
+  {
+  case qvp::SliceOrientation::Axial:
+    voxelPosition_.x = clampedImageCoordinate(imagePoint.x(), volume_->width());
+    voxelPosition_.y = clampedImageCoordinate(imagePoint.y(), volume_->height());
+    break;
+  case qvp::SliceOrientation::Sagittal:
+    voxelPosition_.y = clampedImageCoordinate(imagePoint.x(), volume_->height());
+    voxelPosition_.z = clampedImageCoordinate(imagePoint.y(), volume_->depth());
+    break;
+  case qvp::SliceOrientation::Coronal:
+    voxelPosition_.x = clampedImageCoordinate(imagePoint.x(), volume_->width());
+    voxelPosition_.z = clampedImageCoordinate(imagePoint.y(), volume_->depth());
+    break;
+  }
+
+  synchronizeViews();
 }
 
 std::optional<qvp::PhysicalPoint3D> MprViewerWidget::physicalPosition() const
@@ -120,10 +175,13 @@ void MprViewerWidget::clampVoxelPosition() noexcept
   voxelPosition_.z = std::min(voxelPosition_.z, volume_->depth() - 1);
 }
 
-void MprViewerWidget::synchronizeSliceIndices()
+void MprViewerWidget::synchronizeViews()
 {
   if (!hasUsableVolume())
   {
+    axialViewer_->setCrosshairPosition(std::nullopt);
+    sagittalViewer_->setCrosshairPosition(std::nullopt);
+    coronalViewer_->setCrosshairPosition(std::nullopt);
     axialViewer_->setSliceIndex(0);
     sagittalViewer_->setSliceIndex(0);
     coronalViewer_->setSliceIndex(0);
@@ -133,6 +191,12 @@ void MprViewerWidget::synchronizeSliceIndices()
   axialViewer_->setSliceIndex(voxelPosition_.z);
   sagittalViewer_->setSliceIndex(voxelPosition_.x);
   coronalViewer_->setSliceIndex(voxelPosition_.y);
+  axialViewer_->setCrosshairPosition(
+      pixelCenter(voxelPosition_.x, voxelPosition_.y));
+  sagittalViewer_->setCrosshairPosition(
+      pixelCenter(voxelPosition_.y, voxelPosition_.z));
+  coronalViewer_->setCrosshairPosition(
+      pixelCenter(voxelPosition_.x, voxelPosition_.z));
 }
 
 } // namespace maiw::viewer

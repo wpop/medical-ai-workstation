@@ -4,6 +4,7 @@
 
 #include "qtviewerpro/core/VolumePhysicalCoordinateMapper.h"
 
+#include <QPointF>
 #include <QWidget>
 
 #include <optional>
@@ -70,6 +71,25 @@ public:
   [[nodiscard]] qvp::VoxelIndex3D voxelPosition() const noexcept;
 
   /**
+   * @brief Navigate from a point in one orthogonal slice image.
+   *
+   * The argument uses MAIW/qvp MPR slice pixel-space coordinates, with pixel
+   * centers at `(index + 0.5)`. Positive fractional coordinates identify the
+   * containing pixel. These are not the normalized image-local coordinates
+   * emitted by qvp::OpenGLSliceViewer::crosshairPositionChanged. A caller using
+   * that signal must first perform an explicit normalized-to-pixel conversion.
+   *
+   * The two in-plane voxel coordinates are updated and clamped while the
+   * coordinate normal to the slice is preserved. With no usable volume
+   * assigned, this operation has no effect.
+   *
+   * @param orientation Orientation of the source slice image.
+   * @param imagePoint Point in source image coordinates.
+   */
+  void setPositionFromImagePoint(qvp::SliceOrientation orientation,
+                                 QPointF imagePoint);
+
+  /**
    * @brief Return the current patient-space physical coordinate.
    *
    * @return Physical coordinate for the selected voxel, or std::nullopt when no
@@ -95,7 +115,7 @@ public:
 private:
   [[nodiscard]] bool hasUsableVolume() const noexcept;
   void clampVoxelPosition() noexcept;
-  void synchronizeSliceIndices();
+  void synchronizeViews();
 
   /**
    * @brief Externally owned volume observed by this widget.

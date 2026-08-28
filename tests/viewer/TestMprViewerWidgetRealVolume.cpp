@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QPointF>
 #include <QString>
 #include <QThread>
 #include <QTimer>
@@ -123,6 +124,45 @@ void requireSynchronizedSlices(const maiw::viewer::MprViewerWidget& widget,
           context + ": coronal slice does not match voxel Y");
 }
 
+void requireCrosshair(const maiw::viewer::SliceViewerWidget& viewer,
+                      std::size_t imageX,
+                      std::size_t imageY,
+                      const std::string& context)
+{
+  const auto position = viewer.crosshairPosition();
+  require(position.has_value(), context + ": crosshair is hidden");
+  require(position->x() == static_cast<double>(imageX) + 0.5 &&
+              position->y() == static_cast<double>(imageY) + 0.5,
+          context + ": crosshair position mismatch");
+}
+
+void requireSynchronizedCrosshairs(const maiw::viewer::MprViewerWidget& widget,
+                                   const qvp::VoxelIndex3D& position,
+                                   const std::string& context)
+{
+  requireCrosshair(widget.axialViewer(),
+                   position.x,
+                   position.y,
+                   context + " axial");
+  requireCrosshair(widget.sagittalViewer(),
+                   position.y,
+                   position.z,
+                   context + " sagittal");
+  requireCrosshair(widget.coronalViewer(),
+                   position.x,
+                   position.z,
+                   context + " coronal");
+}
+
+void requireSynchronizedState(const maiw::viewer::MprViewerWidget& widget,
+                              const qvp::VoxelIndex3D& position,
+                              const std::string& context)
+{
+  requirePosition(widget.voxelPosition(), position, context);
+  requireSynchronizedSlices(widget, position, context);
+  requireSynchronizedCrosshairs(widget, position, context);
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -153,37 +193,87 @@ int main(int argc, char* argv[])
                   center.y < volume->height() &&
                   center.z < volume->depth(),
               "initial center voxel is outside the real volume bounds");
-      requirePosition(widget.voxelPosition(), center, "initial center");
-      requireSynchronizedSlices(widget, center, "initial center");
+      requireSynchronizedState(widget, center, "initial center");
 
       const qvp::VoxelIndex3D origin{};
       widget.setVoxelPosition(origin);
-      requirePosition(widget.voxelPosition(), origin, "origin selection");
-      requireSynchronizedSlices(widget, origin, "origin selection");
+      requireSynchronizedState(widget, origin, "origin selection");
 
       const qvp::VoxelIndex3D last{
           volume->width() - 1,
           volume->height() - 1,
           volume->depth() - 1};
       widget.setVoxelPosition(last);
-      requirePosition(widget.voxelPosition(), last, "last voxel selection");
-      requireSynchronizedSlices(widget, last, "last voxel selection");
+      requireSynchronizedState(widget, last, "last voxel selection");
+
+      const qvp::VoxelIndex3D axialStart{
+          volume->width() - 1,
+          volume->height() - 1,
+          volume->depth() / 2};
+      widget.setVoxelPosition(axialStart);
+      const qvp::VoxelIndex3D axialResult{
+          volume->width() / 3,
+          volume->height() / 3,
+          axialStart.z};
+      widget.setPositionFromImagePoint(
+          qvp::SliceOrientation::Axial,
+          QPointF(static_cast<double>(axialResult.x) + 0.5,
+                  static_cast<double>(axialResult.y) + 0.5));
+      requireSynchronizedState(widget, axialResult, "axial image-point mapping");
+
+      const qvp::VoxelIndex3D sagittalResult{
+          axialResult.x,
+          volume->height() / 4,
+          volume->depth() / 3};
+      widget.setPositionFromImagePoint(
+          qvp::SliceOrientation::Sagittal,
+          QPointF(static_cast<double>(sagittalResult.y) + 0.5,
+                  static_cast<double>(sagittalResult.z) + 0.5));
+      requireSynchronizedState(widget,
+                               sagittalResult,
+                               "sagittal image-point mapping");
+
+      const qvp::VoxelIndex3D coronalResult{
+          volume->width() / 4,
+          sagittalResult.y,
+          volume->depth() / 4};
+      widget.setPositionFromImagePoint(
+          qvp::SliceOrientation::Coronal,
+          QPointF(static_cast<double>(coronalResult.x) + 0.5,
+                  static_cast<double>(coronalResult.z) + 0.5));
+      requireSynchronizedState(widget,
+                               coronalResult,
+                               "coronal image-point mapping");
 
       const auto maximum = std::numeric_limits<std::size_t>::max();
-      widget.setVoxelPosition(
-          qvp::VoxelIndex3D{maximum, maximum, maximum});
-      requirePosition(widget.voxelPosition(), last, "clamped selection");
-      requireSynchronizedSlices(widget, last, "clamped selection");
+      widget.setPositionFromImagePoint(
+          qvp::SliceOrientation::Axial,
+          QPointF(-100.0, static_cast<double>(maximum)));
+      const qvp::VoxelIndex3D clamped{
+          0,
+          volume->height() - 1,
+          coronalResult.z};
+      requireSynchronizedState(widget, clamped, "clamped image-point mapping");
 
       const auto physicalPosition = widget.physicalPosition();
       require(physicalPosition.has_value(),
               "MPR physical position is unavailable for the real volume");
       const qvp::PhysicalPoint3D expectedPhysicalPosition =
-          qvp::VolumePhysicalCoordinateMapper::voxelToPhysical(*volume, last);
+          qvp::VolumePhysicalCoordinateMapper::voxelToPhysical(*volume, clamped);
       require(physicalPosition->x == expectedPhysicalPosition.x &&
                   physicalPosition->y == expectedPhysicalPosition.y &&
                   physicalPosition->z == expectedPhysicalPosition.z,
               "MPR physical position does not match the public mapper");
+
+      widget.setVoxelPosition(last);
+      widget.setPositionFromImagePoint(
+          qvp::SliceOrientation::Axial,
+          QPointF(std::numeric_limits<double>::quiet_NaN(),
+                  std::numeric_limits<double>::infinity()));
+      const qvp::VoxelIndex3D nonFiniteResult{0, 0, last.z};
+      requireSynchronizedState(widget,
+                               nonFiniteResult,
+                               "non-finite axial image-point mapping");
 
       widget.clearVolume();
       require(!widget.hasVolume(),
@@ -195,12 +285,15 @@ int main(int argc, char* argv[])
                   !widget.sagittalViewer().hasVolume() &&
                   !widget.coronalViewer().hasVolume(),
               "cleared MPR widget retained child volume assignments");
+      require(!widget.axialViewer().crosshairPosition().has_value() &&
+                  !widget.sagittalViewer().crosshairPosition().has_value() &&
+                  !widget.coronalViewer().crosshairPosition().has_value(),
+              "cleared MPR widget retained crosshair state");
 
       widget.setVolume(volume.get());
       require(widget.hasVolume(),
               "MPR widget did not accept the reassigned real volume");
-      requirePosition(widget.voxelPosition(), center, "reassigned center");
-      requireSynchronizedSlices(widget, center, "reassigned center");
+      requireSynchronizedState(widget, center, "reassigned center");
     }
 
     volume.reset();

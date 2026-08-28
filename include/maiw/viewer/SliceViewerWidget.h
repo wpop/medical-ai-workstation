@@ -2,9 +2,13 @@
 
 #include "qtviewerpro/core/SliceOrientation.h"
 
+#include <QImage>
+#include <QPointF>
+#include <QSize>
 #include <QWidget>
 
 #include <cstddef>
+#include <optional>
 
 namespace qvp
 {
@@ -93,6 +97,36 @@ public:
   [[nodiscard]] std::size_t sliceCount() const noexcept;
 
   /**
+   * @brief Set or hide the persistent crosshair in image coordinates.
+   *
+   * The persisted value uses slice-image pixel space, with pixel centers at
+   * `(index + 0.5)`. It is not the normalized image-local coordinate space
+   * emitted by qvp::OpenGLSliceViewer::crosshairPositionChanged. A position is
+   * clamped to the displayed image bounds. Passing std::nullopt hides the
+   * crosshair; a position is ignored while no slice image is available.
+   *
+   * @param position Crosshair position, or std::nullopt to hide it.
+   */
+  void setCrosshairPosition(std::optional<QPointF> position);
+
+  /**
+   * @brief Return the current crosshair position in slice-image pixel space.
+   *
+   * Pixel centers are represented as `(index + 0.5)`; the returned value is not
+   * an OpenGL normalized image-local coordinate.
+   *
+   * @return Clamped pixel-space crosshair position, or std::nullopt when hidden.
+   */
+  [[nodiscard]] std::optional<QPointF> crosshairPosition() const noexcept;
+
+  /**
+   * @brief Return the dimensions of the currently displayed slice image.
+   *
+   * @return Image dimensions, or an empty size when no slice is available.
+   */
+  [[nodiscard]] QSize imageSize() const noexcept;
+
+  /**
    * @brief Re-extract and present the current slice.
    *
    * The empty state clears the renderer without attempting extraction.
@@ -101,6 +135,8 @@ public:
 
 private:
   void clampSliceIndex() noexcept;
+  void clampCrosshairPosition() noexcept;
+  void presentCurrentImage();
 
   /**
    * @brief Externally owned volume observed by this widget.
@@ -108,6 +144,10 @@ private:
   const qvp::VolumeData* volume_ = nullptr;
   qvp::SliceOrientation orientation_ = qvp::SliceOrientation::Axial;
   std::size_t sliceIndex_ = 0;
+  QImage sliceImage_;
+  float sliceSpacingX_ = 1.0F;
+  float sliceSpacingY_ = 1.0F;
+  std::optional<QPointF> crosshairPosition_;
 
   // Qt parent ownership manages the viewer; this pointer is non-owning.
   qvp::OpenGLSliceViewer* viewer_ = nullptr;
