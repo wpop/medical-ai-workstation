@@ -13,6 +13,7 @@
 #include <onnxruntime_cxx_api.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -34,6 +35,9 @@ const QString kConcurrentRequestError =
     QStringLiteral("A cardiac MRI classification is already in progress.");
 const QString kSameFileError =
     QStringLiteral("ED and ES medical volume paths refer to the same file.");
+const QString kValidatedFormatError =
+    QStringLiteral("Cardiac MRI classification accepts only validated "
+                   "NIfTI inputs (.nii or .nii.gz).");
 
 void require(bool condition, const std::string& message)
 {
@@ -95,6 +99,7 @@ void validateResult(
 enum class TestStage
 {
   PostSameFileSuccess,
+  SupportedFormats,
   SameNonexistent,
   DifferentFiles,
   MissingEs,
@@ -141,8 +146,39 @@ int main(int argc, char* argv[])
         identityTestDirectory.filePath(QStringLiteral("first-volume.nii.gz"));
     const QString secondIdentityPath =
         identityTestDirectory.filePath(QStringLiteral("second-volume.nii.gz"));
+    const QString unsupportedIdentityPath =
+        identityTestDirectory.filePath(QStringLiteral("same-volume.dcm"));
     createRegularFile(firstIdentityPath);
     createRegularFile(secondIdentityPath);
+    createRegularFile(unsupportedIdentityPath);
+
+    const std::array<QString, 6> supportedMissingPaths{
+        identityTestDirectory.filePath(QStringLiteral("missing-study.nii")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.nii.gz")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.NII")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.Nii")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.NII.GZ")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.Nii.Gz"))};
+    for (const QString& supportedMissingPath : supportedMissingPaths)
+    {
+      require(!QFileInfo::exists(supportedMissingPath),
+              "generated supported-format missing path unexpectedly exists");
+    }
+
+    const std::array<QString, 8> unsupportedMissingPaths{
+        identityTestDirectory.filePath(QStringLiteral("missing-study.dcm")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.dicom")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.mha")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.mhd")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.nrrd")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.nhdr")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study.json")),
+        identityTestDirectory.filePath(QStringLiteral("missing-study"))};
+    for (const QString& unsupportedMissingPath : unsupportedMissingPaths)
+    {
+      require(!QFileInfo::exists(unsupportedMissingPath),
+              "generated unsupported-format path unexpectedly exists");
+    }
 
     std::size_t startedCount = 0;
     const auto startedCountConnection = QObject::connect(
@@ -231,6 +267,44 @@ int main(int argc, char* argv[])
                                "symlink-target same-file request");
     }
 
+    requireSameFileRejection(unsupportedIdentityPath,
+                             unsupportedIdentityPath,
+                             "unsupported existing same-file request");
+
+    const auto requireFormatRejection =
+        [&workflow,
+         &startedCount,
+         &synchronousFailureCount,
+         &synchronousFailureMessage](const QString& edPath,
+                                     const QString& esPath,
+                                     const std::string& context)
+        {
+          const std::size_t initialStartedCount = startedCount;
+          const std::size_t initialFailureCount = synchronousFailureCount;
+          workflow.startClassification(edPath, esPath);
+          require(synchronousFailureCount == initialFailureCount + 1,
+                  context + ": rejection was not synchronous");
+          require(synchronousFailureMessage == kValidatedFormatError,
+                  context + ": rejection produced an unexpected message");
+          require(startedCount == initialStartedCount,
+                  context + ": rejection unexpectedly started a worker");
+          require(!workflow.isRunning(),
+                  context + ": rejection left the workflow running");
+        };
+
+    for (const QString& unsupportedMissingPath : unsupportedMissingPaths)
+    {
+      requireFormatRejection(unsupportedMissingPath,
+                             realEsPath,
+                             "unsupported ED format request");
+    }
+    requireFormatRejection(realEdPath,
+                           unsupportedMissingPaths.front(),
+                           "unsupported ES format request");
+    requireFormatRejection(unsupportedMissingPaths.back(),
+                           unsupportedMissingPaths.back(),
+                           "unsupported same nonexistent path request");
+
     QObject::disconnect(synchronousFailureConnection);
 
     TestStage stage = TestStage::PostSameFileSuccess;
@@ -238,6 +312,8 @@ int main(int argc, char* argv[])
     std::size_t asynchronousFailureCount = 0;
     std::size_t responsiveTickCount = 0;
     bool postSameFileSuccessObserved = false;
+    bool allSupportedFormatsReachedLoader = false;
+    std::size_t supportedFormatPathIndex = 0;
     bool sameNonexistentFailureObserved = false;
     bool differentFilesFailureObserved = false;
     bool concurrentRequestIssued = false;
@@ -332,9 +408,11 @@ int main(int argc, char* argv[])
          &invalidEdPath,
          &realEdPath,
          &realEsPath,
+         &supportedMissingPaths,
          &stage,
          &successCount,
          &postSameFileSuccessObserved,
+         &supportedFormatPathIndex,
          &concurrentRequestRejected,
          &allAsyncResultsDeliveredOnMainThread,
          &finishWithFailure,
@@ -354,8 +432,10 @@ int main(int argc, char* argv[])
             {
             case TestStage::PostSameFileSuccess:
               postSameFileSuccessObserved = true;
-              stage = TestStage::SameNonexistent;
-              workflow.startClassification(invalidEdPath, invalidEdPath);
+              stage = TestStage::SupportedFormats;
+              workflow.startClassification(
+                  supportedMissingPaths[supportedFormatPathIndex],
+                  realEsPath);
               break;
             case TestStage::ConcurrentPrimary:
               require(concurrentRequestRejected,
@@ -393,10 +473,13 @@ int main(int argc, char* argv[])
          &secondIdentityPath,
          &realEdPath,
          &realEsPath,
+         &supportedMissingPaths,
          &stage,
          &asynchronousFailureCount,
          &sameNonexistentFailureObserved,
          &differentFilesFailureObserved,
+         &allSupportedFormatsReachedLoader,
+         &supportedFormatPathIndex,
          &concurrentRequestRejected,
          &allAsyncResultsDeliveredOnMainThread,
          &finishWithFailure](const QString& message)
@@ -420,6 +503,24 @@ int main(int argc, char* argv[])
 
             switch (stage)
             {
+            case TestStage::SupportedFormats:
+              require(message.startsWith(
+                          QStringLiteral("Failed to load the ED volume: ")),
+                      "supported NIfTI format did not reach ED loading");
+              ++supportedFormatPathIndex;
+              if (supportedFormatPathIndex < supportedMissingPaths.size())
+              {
+                workflow.startClassification(
+                    supportedMissingPaths[supportedFormatPathIndex],
+                    realEsPath);
+              }
+              else
+              {
+                allSupportedFormatsReachedLoader = true;
+                stage = TestStage::SameNonexistent;
+                workflow.startClassification(invalidEdPath, invalidEdPath);
+              }
+              break;
             case TestStage::SameNonexistent:
               require(message.startsWith(
                           QStringLiteral("Failed to load the ED volume: ")),
@@ -475,14 +576,16 @@ int main(int argc, char* argv[])
     require(failure.empty(), failure);
     require(stage == TestStage::Finished, "workflow state-machine test did not finish");
     require(!workflow.isRunning(), "workflow remained running after the final success");
-    require(startedCount == 8,
+    require(startedCount == 14,
             "workflow started an unexpected number of asynchronous workers");
     require(successCount == 4,
             "workflow did not complete all four expected successful runs");
-    require(asynchronousFailureCount == 4,
-            "workflow did not deliver all four expected asynchronous load failures");
+    require(asynchronousFailureCount == 10,
+            "workflow did not deliver all expected asynchronous load failures");
     require(postSameFileSuccessObserved,
             "valid classification did not succeed after same-file rejection");
+    require(allSupportedFormatsReachedLoader,
+            "one or more validated NIfTI formats did not reach the loader");
     require(sameNonexistentFailureObserved,
             "same nonexistent path did not reach asynchronous ED loading");
     require(differentFilesFailureObserved,

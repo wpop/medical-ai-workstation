@@ -2,6 +2,7 @@
 
 #include "qtviewerpro/io/MedicalVolumeLoaderRegistry.h"
 
+#include <QFileInfo>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <exception>
@@ -11,6 +12,18 @@
 
 namespace maiw::qt
 {
+
+namespace
+{
+
+bool hasValidatedCardiacInputFormat(const QString& path)
+{
+  const QString fileName = QFileInfo(path).fileName();
+  return fileName.endsWith(QStringLiteral(".nii"), Qt::CaseInsensitive) ||
+         fileName.endsWith(QStringLiteral(".nii.gz"), Qt::CaseInsensitive);
+}
+
+} // namespace
 
 CardiacMriClassificationWorkflow::CardiacMriClassificationWorkflow(
     cardiac::CardiacMriClassificationService& service,
@@ -59,6 +72,15 @@ void CardiacMriClassificationWorkflow::startClassification(
   {
     emit classificationFailed(
         QStringLiteral("ED and ES medical volume paths refer to the same file."));
+    return;
+  }
+
+  if (!hasValidatedCardiacInputFormat(edPath) ||
+      !hasValidatedCardiacInputFormat(esPath))
+  {
+    emit classificationFailed(
+        QStringLiteral("Cardiac MRI classification accepts only validated "
+                       "NIfTI inputs (.nii or .nii.gz)."));
     return;
   }
 
