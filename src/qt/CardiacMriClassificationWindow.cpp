@@ -5,12 +5,14 @@
 
 #include <QEvent>
 #include <QFileDialog>
-#include <QFormLayout>
+#include <QFont>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QString>
 #include <QVBoxLayout>
 
@@ -49,11 +51,18 @@ CardiacMriClassificationWindow::CardiacMriClassificationWindow(
 
   initializeUi();
 
-  resultWidget_ =
-      new CardiacMriClassificationResultWidget(std::move(classNames), this);
+  auto* resultGroup = new QGroupBox(QStringLiteral("AI result"), this);
+  resultGroup->setObjectName(QStringLiteral("cardiacAiResultGroup"));
+  resultWidget_ = new CardiacMriClassificationResultWidget(
+      std::move(classNames), resultGroup);
+  resultWidget_->setObjectName(
+      QStringLiteral("cardiacClassificationResultWidget"));
+  auto* resultLayout = new QVBoxLayout(resultGroup);
+  resultLayout->addWidget(resultWidget_);
 
   auto* mainLayout = qobject_cast<QVBoxLayout*>(layout());
-  mainLayout->addWidget(resultWidget_);
+  mainLayout->addWidget(resultGroup);
+  mainLayout->addStretch();
 
   connect(&workflow_,
           &CardiacMriClassificationWorkflow::classificationStarted,
@@ -165,6 +174,7 @@ void CardiacMriClassificationWindow::publishEdBrowseSelection(
   }
 
   edPathEdit_->setText(selectedPath);
+  edPathEdit_->setCursorPosition(static_cast<int>(selectedPath.size()));
   emit edVolumePathCommitted(selectedPath);
 }
 
@@ -177,6 +187,7 @@ void CardiacMriClassificationWindow::publishEsBrowseSelection(
   }
 
   esPathEdit_->setText(selectedPath);
+  esPathEdit_->setCursorPosition(static_cast<int>(selectedPath.size()));
   emit esVolumePathCommitted(selectedPath);
 }
 
@@ -227,8 +238,34 @@ void CardiacMriClassificationWindow::handleClassificationFailed(
 void CardiacMriClassificationWindow::initializeUi()
 {
   auto* mainLayout = new QVBoxLayout(this);
+  mainLayout->setSpacing(10);
 
-  auto* inputLayout = new QFormLayout();
+  auto* headerLabel =
+      new QLabel(QStringLiteral("Cardiac MRI Classification"), this);
+  headerLabel->setObjectName(QStringLiteral("cardiacClassificationHeader"));
+  QFont headerFont = headerLabel->font();
+  headerFont.setBold(true);
+  if (headerFont.pointSizeF() > 0.0)
+  {
+    headerFont.setPointSizeF(headerFont.pointSizeF() + 2.0);
+  }
+  headerLabel->setFont(headerFont);
+  mainLayout->addWidget(headerLabel);
+
+  auto* helperLabel = new QLabel(
+      QStringLiteral("Select end-diastolic and end-systolic volumes, then run "
+                     "the validated cardiac MRI classifier."),
+      this);
+  helperLabel->setObjectName(
+      QStringLiteral("cardiacClassificationHelperText"));
+  helperLabel->setWordWrap(true);
+  mainLayout->addWidget(helperLabel);
+
+  auto* studyVolumesGroup =
+      new QGroupBox(QStringLiteral("Study volumes"), this);
+  studyVolumesGroup->setObjectName(
+      QStringLiteral("cardiacStudyVolumesGroup"));
+  auto* inputLayout = new QVBoxLayout(studyVolumesGroup);
 
   /*
    * Each path row contains a text editor and a browse button. All widgets are
@@ -251,7 +288,10 @@ void CardiacMriClassificationWindow::initializeUi()
   edRowLayout->addWidget(edPathEdit_);
   edRowLayout->addWidget(edBrowseButton_);
 
-  inputLayout->addRow(QStringLiteral("ED volume:"), edRowWidget);
+  inputLayout->addWidget(
+      new QLabel(QStringLiteral("End-diastolic (ED) volume"),
+                 studyVolumesGroup));
+  inputLayout->addWidget(edRowWidget);
 
   auto* esRowWidget = new QWidget(this);
   auto* esRowLayout = new QHBoxLayout(esRowWidget);
@@ -269,15 +309,27 @@ void CardiacMriClassificationWindow::initializeUi()
   esRowLayout->addWidget(esPathEdit_);
   esRowLayout->addWidget(esBrowseButton_);
 
-  inputLayout->addRow(QStringLiteral("ES volume:"), esRowWidget);
+  inputLayout->addWidget(
+      new QLabel(QStringLiteral("End-systolic (ES) volume"),
+                 studyVolumesGroup));
+  inputLayout->addWidget(esRowWidget);
 
-  mainLayout->addLayout(inputLayout);
+  mainLayout->addWidget(studyVolumesGroup);
 
   classifyButton_ =
       new QPushButton(QStringLiteral("Classify Cardiac MRI"), this);
+  classifyButton_->setObjectName(QStringLiteral("cardiacClassifyButton"));
+  QFont classifyFont = classifyButton_->font();
+  classifyFont.setBold(true);
+  classifyButton_->setFont(classifyFont);
+  classifyButton_->setDefault(true);
+  classifyButton_->setMinimumHeight(classifyButton_->sizeHint().height() + 8);
+  classifyButton_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   mainLayout->addWidget(classifyButton_);
 
   statusLabel_ = new QLabel(this);
+  statusLabel_->setObjectName(
+      QStringLiteral("cardiacClassificationStatusLabel"));
   statusLabel_->setWordWrap(true);
   mainLayout->addWidget(statusLabel_);
 
@@ -301,17 +353,20 @@ void CardiacMriClassificationWindow::initializeUi()
           this,
           &CardiacMriClassificationWindow::handleEsPathEditingFinished);
 
+  connect(edPathEdit_,
+          &QLineEdit::textChanged,
+          edPathEdit_,
+          &QWidget::setToolTip);
+
+  connect(esPathEdit_,
+          &QLineEdit::textChanged,
+          esPathEdit_,
+          &QWidget::setToolTip);
+
   connect(classifyButton_,
           &QPushButton::clicked,
           this,
           &CardiacMriClassificationWindow::startClassification);
-
-  /*
-   * Keep the initial window deliberately compact. Phase 8 requires a standalone
-   * classification workflow, not a replacement for the existing medical-image
-   * viewer.
-   */
-  resize(680, 420);
 }
 
 bool CardiacMriClassificationWindow::eventFilter(QObject* watched, QEvent* event)

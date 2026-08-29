@@ -1,5 +1,6 @@
 #include "maiw/qt/CardiacMriClassificationResultWidget.h"
 
+#include <QFont>
 #include <QFormLayout>
 #include <QLabel>
 #include <QString>
@@ -93,12 +94,30 @@ void CardiacMriClassificationResultWidget::initializeUi()
 
   auto* predictionLayout = new QFormLayout();
   predictedClassValueLabel_ = new QLabel(this);
+  predictedClassValueLabel_->setObjectName(
+      QStringLiteral("cardiacPredictedClassValueLabel"));
+  QFont predictedClassFont = predictedClassValueLabel_->font();
+  predictedClassFont.setBold(true);
+  if (predictedClassFont.pointSizeF() > 0.0)
+  {
+    predictedClassFont.setPointSizeF(predictedClassFont.pointSizeF() + 2.0);
+  }
+  predictedClassValueLabel_->setFont(predictedClassFont);
 
   predictionLayout->addRow(
       QStringLiteral("Predicted class:"),
       predictedClassValueLabel_);
 
   mainLayout->addLayout(predictionLayout);
+
+  auto* probabilityHeading =
+      new QLabel(QStringLiteral("Class probabilities"), this);
+  probabilityHeading->setObjectName(
+      QStringLiteral("cardiacClassProbabilitiesLabel"));
+  QFont probabilityHeadingFont = probabilityHeading->font();
+  probabilityHeadingFont.setBold(true);
+  probabilityHeading->setFont(probabilityHeadingFont);
+  mainLayout->addWidget(probabilityHeading);
 
   auto* probabilityLayout = new QFormLayout();
 

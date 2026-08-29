@@ -3,7 +3,7 @@
 #include "qtviewerpro/core/SliceOrientation.h"
 #include "qtviewerpro/core/VolumeData.h"
 
-#include <QHBoxLayout>
+#include <QGridLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -41,7 +41,7 @@ namespace maiw::viewer
 MprViewerWidget::MprViewerWidget(QWidget* parent)
     : QWidget(parent)
 {
-  auto* layout = new QHBoxLayout(this);
+  auto* layout = new QGridLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
 
   axialViewer_ = new SliceViewerWidget(this);
@@ -74,9 +74,13 @@ MprViewerWidget::MprViewerWidget(QWidget* parent)
             setPositionFromImagePoint(qvp::SliceOrientation::Coronal, imagePoint);
           });
 
-  layout->addWidget(axialViewer_);
-  layout->addWidget(sagittalViewer_);
-  layout->addWidget(coronalViewer_);
+  layout->addWidget(axialViewer_, 0, 0);
+  layout->addWidget(sagittalViewer_, 0, 1);
+  layout->addWidget(coronalViewer_, 1, 0, 1, 2);
+  layout->setColumnStretch(0, 1);
+  layout->setColumnStretch(1, 1);
+  layout->setRowStretch(0, 1);
+  layout->setRowStretch(1, 1);
 }
 
 void MprViewerWidget::setVolume(const qvp::VolumeData* volume)

@@ -41,6 +41,9 @@ MedicalAiWorkstationWindow::MedicalAiWorkstationWindow(
   setCentralWidget(splitter);
   setWindowTitle(QStringLiteral("Medical AI Workstation"));
   resize(1600, 900);
+
+  const int initialViewerWidth = width() * 3 / 4;
+  splitter->setSizes({initialViewerWidth, width() - initialViewerWidth});
 }
 
 const viewer::ViewerWorkspaceWidget&

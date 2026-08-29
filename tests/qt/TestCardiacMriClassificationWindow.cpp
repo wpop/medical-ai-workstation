@@ -9,6 +9,8 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QGroupBox>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
 #include <QMouseEvent>
@@ -41,6 +43,8 @@ const QString kEdBrowseButtonObjectName =
     QStringLiteral("cardiacEdVolumeBrowseButton");
 const QString kEsBrowseButtonObjectName =
     QStringLiteral("cardiacEsVolumeBrowseButton");
+const QString kClassifyButtonObjectName =
+    QStringLiteral("cardiacClassifyButton");
 
 void require(bool condition, const std::string& message)
 {
@@ -142,6 +146,37 @@ int main(int argc, char* argv[])
     requireControlsEnabled(window, true, "initial state");
     require(window.resultWidget() != nullptr,
             "classification result widget is missing");
+    auto* const header = window.findChild<QLabel*>(
+        QStringLiteral("cardiacClassificationHeader"));
+    auto* const helperText = window.findChild<QLabel*>(
+        QStringLiteral("cardiacClassificationHelperText"));
+    auto* const studyVolumesGroup = window.findChild<QGroupBox*>(
+        QStringLiteral("cardiacStudyVolumesGroup"));
+    auto* const aiResultGroup = window.findChild<QGroupBox*>(
+        QStringLiteral("cardiacAiResultGroup"));
+    auto* const classifyButton =
+        window.findChild<QPushButton*>(kClassifyButtonObjectName);
+    auto* const edBrowseButton =
+        window.findChild<QPushButton*>(kEdBrowseButtonObjectName);
+    auto* const esBrowseButton =
+        window.findChild<QPushButton*>(kEsBrowseButtonObjectName);
+    require(header != nullptr &&
+                header->text() == QStringLiteral("Cardiac MRI Classification") &&
+                header->font().bold(),
+            "cardiac presentation header is missing or not emphasized");
+    require(helperText != nullptr && !helperText->text().isEmpty() &&
+                helperText->wordWrap(),
+            "cardiac presentation helper text is missing");
+    require(studyVolumesGroup != nullptr &&
+                studyVolumesGroup->title() == QStringLiteral("Study volumes"),
+            "cardiac study-volumes group is missing");
+    require(aiResultGroup != nullptr &&
+                aiResultGroup->title() == QStringLiteral("AI result"),
+            "cardiac AI-result group is missing");
+    require(classifyButton != nullptr && classifyButton->font().bold() &&
+                classifyButton->isDefault() &&
+                classifyButton->minimumHeight() > classifyButton->sizeHint().height(),
+            "cardiac classification action is not visually primary");
 
     int edPathCommitCount = 0;
     int esPathCommitCount = 0;
@@ -179,6 +214,11 @@ int main(int argc, char* argv[])
             "manual ED editing emitted an ES path commit");
     require(committedEdPath == manuallyCommittedEdPath,
             "manual ED editing emitted an unexpected path");
+    auto* const edPathEdit =
+        window.findChild<QLineEdit*>(kEdPathEditObjectName);
+    require(edPathEdit != nullptr &&
+                edPathEdit->toolTip() == manuallyCommittedEdPath,
+            "manual ED path is not available as a tooltip");
 
     const QString manuallyCommittedEsPath =
         QStringLiteral("/test/manual-es-volume.nii.gz");
@@ -189,6 +229,11 @@ int main(int argc, char* argv[])
             "manual ES editing did not emit exactly one ES path commit");
     require(committedEsPath == manuallyCommittedEsPath,
             "manual ES editing emitted an unexpected path");
+    auto* const esPathEdit =
+        window.findChild<QLineEdit*>(kEsPathEditObjectName);
+    require(esPathEdit != nullptr &&
+                esPathEdit->toolTip() == manuallyCommittedEsPath,
+            "manual ES path is not available as a tooltip");
     require(!workflow.isRunning(),
             "committing cardiac paths unexpectedly started classification");
     requireControlsEnabled(window, true, "manual path commit state");
@@ -199,6 +244,16 @@ int main(int argc, char* argv[])
 
     window.show();
     QApplication::processEvents();
+    require(header->isVisible() && helperText->isVisible() &&
+                studyVolumesGroup->isVisible() && aiResultGroup->isVisible() &&
+                classifyButton->isVisible(),
+            "cardiac presentation hierarchy is not visible");
+    require(edBrowseButton != nullptr &&
+                edPathEdit->width() > edBrowseButton->width(),
+            "ED path editor is not wider than its Browse action");
+    require(esBrowseButton != nullptr &&
+                esPathEdit->width() > esBrowseButton->width(),
+            "ES path editor is not wider than its Browse action");
 
     const QString pendingEdPath =
         QStringLiteral("/test/pending-ed-before-browse.nii.gz");
@@ -222,6 +277,10 @@ int main(int argc, char* argv[])
             "accepted ED Browse selection emitted an ES path commit");
     require(committedEdPath == browsedEdPath,
             "accepted ED Browse selection emitted an unexpected path");
+    require(edPathEdit->toolTip() == browsedEdPath &&
+                edPathEdit->cursorPosition() ==
+                    static_cast<int>(browsedEdPath.size()),
+            "accepted ED Browse path is not presented in full");
 
     const QString pendingCancelledEdPath =
         QStringLiteral("/test/pending-cancelled-ed-browse.nii.gz");
@@ -234,8 +293,6 @@ int main(int argc, char* argv[])
                            QString());
     require(edPathCommitCount == 2 && esPathCommitCount == 1,
             "cancelled ED Browse selection emitted a path commit");
-    auto* const edPathEdit =
-        window.findChild<QLineEdit*>(kEdPathEditObjectName);
     require(edPathEdit != nullptr && edPathEdit->text() == pendingCancelledEdPath,
             "cancelled ED Browse selection changed the pending ED path");
 
@@ -261,6 +318,10 @@ int main(int argc, char* argv[])
             "accepted ES Browse selection did not emit exactly one commit");
     require(committedEsPath == browsedEsPath,
             "accepted ES Browse selection emitted an unexpected path");
+    require(esPathEdit->toolTip() == browsedEsPath &&
+                esPathEdit->cursorPosition() ==
+                    static_cast<int>(browsedEsPath.size()),
+            "accepted ES Browse path is not presented in full");
 
     const QString pendingCancelledEsPath =
         QStringLiteral("/test/pending-cancelled-es-browse.nii.gz");
@@ -273,15 +334,9 @@ int main(int argc, char* argv[])
                            QString());
     require(edPathCommitCount == 2 && esPathCommitCount == 2,
             "cancelled ES Browse selection emitted a path commit");
-    auto* const esPathEdit =
-        window.findChild<QLineEdit*>(kEsPathEditObjectName);
     require(esPathEdit != nullptr && esPathEdit->text() == pendingCancelledEsPath,
             "cancelled ES Browse selection changed the pending ES path");
 
-    auto* const edBrowseButton =
-        window.findChild<QPushButton*>(kEdBrowseButtonObjectName);
-    auto* const esBrowseButton =
-        window.findChild<QPushButton*>(kEsBrowseButtonObjectName);
     require(edBrowseButton != nullptr && esBrowseButton != nullptr,
             "cardiac Browse buttons are missing");
     require((edBrowseButton->focusPolicy() & Qt::TabFocus) != 0 &&

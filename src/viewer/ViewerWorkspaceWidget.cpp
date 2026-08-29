@@ -36,8 +36,12 @@ ViewerWorkspaceWidget::ViewerWorkspaceWidget(QWidget* parent)
   splitter->addWidget(mprViewer_);
   volumeRenderingWidget_ = new VolumeRenderingWidget;
   splitter->addWidget(volumeRenderingWidget_);
-  splitter->setStretchFactor(0, 3);
+  splitter->setStretchFactor(0, 2);
   splitter->setStretchFactor(1, 1);
+  splitter->setChildrenCollapsible(false);
+
+  const int initialMprWidth = width() * 2 / 3;
+  splitter->setSizes({initialMprWidth, width() - initialMprWidth});
   layout->addWidget(splitter);
 }
 
