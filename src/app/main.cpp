@@ -1,7 +1,7 @@
 #include "maiw/cardiac/CardiacMriClassificationService.h"
 #include "maiw/cardiac/CardiacMriDeploymentMetadata.h"
-#include "maiw/qt/CardiacMriClassificationWindow.h"
 #include "maiw/qt/CardiacMriClassificationWorkflow.h"
+#include "maiw/qt/MedicalAiWorkstationWindow.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
 
   QCommandLineParser parser;
   parser.setApplicationDescription(
-      QStringLiteral("Standalone cardiac MRI classification workstation."));
+      QStringLiteral("Unified medical-image viewing and cardiac MRI classification workstation."));
   parser.addHelpOption();
   parser.addVersionOption();
 
@@ -98,7 +98,7 @@ int main(int argc, char* argv[])
      * Ort::Env
      *   outlives CardiacMriClassificationService
      *     outlives CardiacMriClassificationWorkflow
-     *       outlives CardiacMriClassificationWindow
+     *       outlives MedicalAiWorkstationWindow
      *
      * Stack destruction occurs in the reverse order, preserving every
      * non-owning reference contract without shared ownership or global state.
@@ -113,7 +113,7 @@ int main(int argc, char* argv[])
 
     maiw::qt::CardiacMriClassificationWorkflow workflow(service);
 
-    maiw::qt::CardiacMriClassificationWindow window(
+    maiw::qt::MedicalAiWorkstationWindow window(
         workflow,
         classNames);
 

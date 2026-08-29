@@ -17,7 +17,7 @@ class CardiacMriClassificationResultWidget;
 class CardiacMriClassificationWorkflow;
 
 /**
- * @brief Standalone Qt window for the cardiac MRI classification workflow.
+ * @brief Qt presentation widget for the cardiac MRI classification workflow.
  *
  * This class is a presentation-layer coordinator. It collects the paths to the
  * end-diastolic (ED) and end-systolic (ES) volumes from the user, starts the
@@ -39,7 +39,7 @@ class CardiacMriClassificationWindow final : public QWidget
 
 public:
   /**
-   * @brief Construct the standalone cardiac MRI classification window.
+   * @brief Construct the cardiac MRI classification presentation widget.
    *
    * The supplied workflow is used as the asynchronous execution boundary for
    * all classification requests initiated by this window.

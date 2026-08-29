@@ -288,13 +288,39 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
         )
     endif()
 
+    add_library(maiw-workstation-ui
+        include/maiw/qt/MedicalAiWorkstationWindow.h
+        src/qt/MedicalAiWorkstationWindow.cpp
+    )
+
+    target_include_directories(maiw-workstation-ui
+        PUBLIC
+            include
+    )
+
+    target_link_libraries(maiw-workstation-ui
+        PUBLIC
+            maiw-cardiac-classification-workflow
+            maiw-viewer-widgets
+            Qt6::Widgets
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(maiw-workstation-ui
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+
     add_executable(medical-ai-workstation
         src/app/main.cpp
     )
 
     target_link_libraries(medical-ai-workstation
         PRIVATE
-            maiw-cardiac-classification-workflow
+            maiw-workstation-ui
     )
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -773,6 +799,44 @@ if(BUILD_TESTING)
             )
 
             set_tests_properties(cardiac-mri-classification-window
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+
+            add_executable(test-medical-ai-workstation-window
+                tests/qt/TestMedicalAiWorkstationWindow.cpp
+            )
+
+            target_compile_definitions(test-medical-ai-workstation-window
+                PRIVATE
+                    MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+            )
+
+            target_link_libraries(test-medical-ai-workstation-window
+                PRIVATE
+                    maiw-workstation-ui
+            )
+
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test-medical-ai-workstation-window
+                    PRIVATE
+                        -Wall
+                        -Wextra
+                        -Wpedantic
+                )
+            endif()
+
+            set_target_properties(test-medical-ai-workstation-window
+                PROPERTIES
+                    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+            )
+
+            add_test(
+                NAME medical-ai-workstation-window
+                COMMAND test-medical-ai-workstation-window
+            )
+
+            set_tests_properties(medical-ai-workstation-window
                 PROPERTIES
                     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
