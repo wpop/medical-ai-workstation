@@ -25,17 +25,14 @@ namespace
 {
 
 /**
- * @brief Return the file-dialog filter used for supported medical volume inputs.
+ * @brief Return the file-dialog filter for cardiac AI validated inputs.
  *
- * The workflow delegates format detection and loading to qt-viewer-pro medical
- * IO. The filter therefore only improves file-selection usability and does not
- * define the authoritative set of supported formats.
+ * The cardiac classification workflow is validated for NIfTI inputs only.
+ * The workflow remains the authoritative enforcement boundary.
  */
 QString medicalVolumeFileFilter()
 {
-  return QStringLiteral(
-      "Medical Volumes (*.nii *.nii.gz *.mhd *.mha *.nrrd *.nhdr *.dcm *.dicom *.json);;"
-      "All Files (*)");
+  return QStringLiteral("NIfTI Volumes (*.nii *.nii.gz);;All Files (*)");
 }
 
 } // namespace
