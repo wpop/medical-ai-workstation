@@ -5,6 +5,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <exception>
+#include <filesystem>
+#include <system_error>
 #include <utility>
 
 namespace maiw::qt
@@ -45,6 +47,18 @@ void CardiacMriClassificationWorkflow::startClassification(
   {
     emit classificationFailed(
         QStringLiteral("Both ED and ES medical volume paths are required."));
+    return;
+  }
+
+  std::error_code equivalenceError;
+  const bool pathsAreEquivalent = std::filesystem::equivalent(
+      std::filesystem::path{edPath.toStdString()},
+      std::filesystem::path{esPath.toStdString()},
+      equivalenceError);
+  if (!equivalenceError && pathsAreEquivalent)
+  {
+    emit classificationFailed(
+        QStringLiteral("ED and ES medical volume paths refer to the same file."));
     return;
   }
 
