@@ -4,8 +4,10 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QThread>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUuid>
 #include <onnxruntime_cxx_api.h>
@@ -30,6 +32,8 @@ const QString kRequiredPathsError =
     QStringLiteral("Both ED and ES medical volume paths are required.");
 const QString kConcurrentRequestError =
     QStringLiteral("A cardiac MRI classification is already in progress.");
+const QString kSameFileError =
+    QStringLiteral("ED and ES medical volume paths refer to the same file.");
 
 void require(bool condition, const std::string& message)
 {
@@ -37,6 +41,15 @@ void require(bool condition, const std::string& message)
   {
     throw std::runtime_error(message);
   }
+}
+
+void createRegularFile(const QString& path)
+{
+  QFile file(path);
+  require(file.open(QIODevice::WriteOnly),
+          "failed to create a temporary filesystem identity test file");
+  require(file.write("filesystem identity test") > 0,
+          "failed to populate a temporary filesystem identity test file");
 }
 
 template <typename Values>
@@ -81,6 +94,9 @@ void validateResult(
 
 enum class TestStage
 {
+  PostSameFileSuccess,
+  SameNonexistent,
+  DifferentFiles,
   MissingEs,
   ConcurrentPrimary,
   SequentialSuccess,
@@ -116,6 +132,17 @@ int main(int argc, char* argv[])
             "generated invalid ED path unexpectedly exists");
     require(!QFileInfo::exists(invalidEsPath),
             "generated invalid ES path unexpectedly exists");
+
+    QTemporaryDir identityTestDirectory(
+        QDir::temp().filePath(QStringLiteral("maiw-workflow-identity-XXXXXX")));
+    require(identityTestDirectory.isValid(),
+            "failed to create the filesystem identity test directory");
+    const QString firstIdentityPath =
+        identityTestDirectory.filePath(QStringLiteral("first-volume.nii.gz"));
+    const QString secondIdentityPath =
+        identityTestDirectory.filePath(QStringLiteral("second-volume.nii.gz"));
+    createRegularFile(firstIdentityPath);
+    createRegularFile(secondIdentityPath);
 
     std::size_t startedCount = 0;
     const auto startedCountConnection = QObject::connect(
@@ -155,12 +182,64 @@ int main(int argc, char* argv[])
     require(startedCount == 0, "empty ES path unexpectedly started a worker");
     require(!workflow.isRunning(), "empty ES path left the workflow running");
 
+    const auto requireSameFileRejection =
+        [&workflow,
+         &startedCount,
+         &synchronousFailureCount,
+         &synchronousFailureMessage](const QString& edPath,
+                                     const QString& esPath,
+                                     const std::string& context)
+        {
+          const std::size_t initialStartedCount = startedCount;
+          const std::size_t initialFailureCount = synchronousFailureCount;
+          workflow.startClassification(edPath, esPath);
+          require(synchronousFailureCount == initialFailureCount + 1,
+                  context + ": rejection was not synchronous");
+          require(synchronousFailureMessage == kSameFileError,
+                  context + ": rejection produced an unexpected message");
+          require(startedCount == initialStartedCount,
+                  context + ": rejection unexpectedly started a worker");
+          require(!workflow.isRunning(),
+                  context + ": rejection left the workflow running");
+        };
+
+    requireSameFileRejection(firstIdentityPath,
+                             firstIdentityPath,
+                             "exact same-file request");
+
+    const QString absoluteIdentityPath =
+        QFileInfo(firstIdentityPath).absoluteFilePath();
+    const QString relativeIdentityPath =
+        QDir::current().relativeFilePath(absoluteIdentityPath);
+    require(!QDir::isAbsolutePath(relativeIdentityPath),
+            "filesystem identity test did not produce a relative path");
+    requireSameFileRejection(absoluteIdentityPath,
+                             relativeIdentityPath,
+                             "absolute-relative same-file request");
+
+    const QString symlinkPath =
+        identityTestDirectory.filePath(QStringLiteral("first-volume-link.nii.gz"));
+    std::error_code symlinkError;
+    std::filesystem::create_symlink(
+        std::filesystem::path{absoluteIdentityPath.toStdString()},
+        std::filesystem::path{symlinkPath.toStdString()},
+        symlinkError);
+    if (!symlinkError)
+    {
+      requireSameFileRejection(symlinkPath,
+                               absoluteIdentityPath,
+                               "symlink-target same-file request");
+    }
+
     QObject::disconnect(synchronousFailureConnection);
 
-    TestStage stage = TestStage::MissingEs;
+    TestStage stage = TestStage::PostSameFileSuccess;
     std::size_t successCount = 0;
     std::size_t asynchronousFailureCount = 0;
     std::size_t responsiveTickCount = 0;
+    bool postSameFileSuccessObserved = false;
+    bool sameNonexistentFailureObserved = false;
+    bool differentFilesFailureObserved = false;
     bool concurrentRequestIssued = false;
     bool concurrentRequestRejected = false;
     bool allAsyncResultsDeliveredOnMainThread = true;
@@ -255,6 +334,7 @@ int main(int argc, char* argv[])
          &realEsPath,
          &stage,
          &successCount,
+         &postSameFileSuccessObserved,
          &concurrentRequestRejected,
          &allAsyncResultsDeliveredOnMainThread,
          &finishWithFailure,
@@ -272,6 +352,11 @@ int main(int argc, char* argv[])
 
             switch (stage)
             {
+            case TestStage::PostSameFileSuccess:
+              postSameFileSuccessObserved = true;
+              stage = TestStage::SameNonexistent;
+              workflow.startClassification(invalidEdPath, invalidEdPath);
+              break;
             case TestStage::ConcurrentPrimary:
               require(concurrentRequestRejected,
                       "primary classification completed without concurrent rejection");
@@ -302,10 +387,16 @@ int main(int argc, char* argv[])
         &application,
         [&application,
          &workflow,
+         &invalidEdPath,
+         &invalidEsPath,
+         &firstIdentityPath,
+         &secondIdentityPath,
          &realEdPath,
          &realEsPath,
          &stage,
          &asynchronousFailureCount,
+         &sameNonexistentFailureObserved,
+         &differentFilesFailureObserved,
          &concurrentRequestRejected,
          &allAsyncResultsDeliveredOnMainThread,
          &finishWithFailure](const QString& message)
@@ -329,6 +420,22 @@ int main(int argc, char* argv[])
 
             switch (stage)
             {
+            case TestStage::SameNonexistent:
+              require(message.startsWith(
+                          QStringLiteral("Failed to load the ED volume: ")),
+                      "same nonexistent path did not preserve the missing-ED failure");
+              sameNonexistentFailureObserved = true;
+              stage = TestStage::DifferentFiles;
+              workflow.startClassification(firstIdentityPath, secondIdentityPath);
+              break;
+            case TestStage::DifferentFiles:
+              require(message.startsWith(
+                          QStringLiteral("Failed to load the ED volume: ")),
+                      "different files produced an unexpected load failure");
+              differentFilesFailureObserved = true;
+              stage = TestStage::MissingEs;
+              workflow.startClassification(realEdPath, invalidEsPath);
+              break;
             case TestStage::MissingEs:
               require(message.startsWith(QStringLiteral("Failed to load the ES volume: ")),
                       "missing ES path produced an unexpected error message");
@@ -357,9 +464,9 @@ int main(int argc, char* argv[])
     watchdogTimer.start();
     QTimer::singleShot(0,
                        &workflow,
-                       [&workflow, &realEdPath, &invalidEsPath]()
+                       [&workflow, &realEdPath, &realEsPath]()
                        {
-                         workflow.startClassification(realEdPath, invalidEsPath);
+                         workflow.startClassification(realEdPath, realEsPath);
                        });
 
     application.exec();
@@ -368,12 +475,18 @@ int main(int argc, char* argv[])
     require(failure.empty(), failure);
     require(stage == TestStage::Finished, "workflow state-machine test did not finish");
     require(!workflow.isRunning(), "workflow remained running after the final success");
-    require(startedCount == 5,
+    require(startedCount == 8,
             "workflow started an unexpected number of asynchronous workers");
-    require(successCount == 3,
-            "workflow did not complete all three expected successful runs");
-    require(asynchronousFailureCount == 2,
-            "workflow did not deliver both expected asynchronous load failures");
+    require(successCount == 4,
+            "workflow did not complete all four expected successful runs");
+    require(asynchronousFailureCount == 4,
+            "workflow did not deliver all four expected asynchronous load failures");
+    require(postSameFileSuccessObserved,
+            "valid classification did not succeed after same-file rejection");
+    require(sameNonexistentFailureObserved,
+            "same nonexistent path did not reach asynchronous ED loading");
+    require(differentFilesFailureObserved,
+            "different files were not processed by the existing loader path");
     require(concurrentRequestIssued && concurrentRequestRejected,
             "concurrent request rejection was not fully observed");
     require(allAsyncResultsDeliveredOnMainThread,
