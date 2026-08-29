@@ -218,7 +218,9 @@ void CardiacMriClassificationWindow::handleClassificationSucceeded(
    */
   resultWidget_->setResult(result);
 
-  statusLabel_->setText(QStringLiteral("Classification completed."));
+  statusLabel_->setText(
+      QStringLiteral("Classification completed. Geometry compatibility validated; "
+                     "patient/study identity not independently verified."));
   updateControls();
 }
 

@@ -35,6 +35,11 @@ using maiw::qt::CardiacMriClassificationWindow;
 constexpr int kRealClassificationTimeoutMilliseconds = 30000;
 const QString kRequiredPathsError =
     QStringLiteral("Both ED and ES medical volume paths are required.");
+const QString kSuccessfulClassificationStatus =
+    QStringLiteral("Classification completed. Geometry compatibility validated; "
+                   "patient/study identity not independently verified.");
+const QString kFailedClassificationStatus =
+    QStringLiteral("Classification failed.");
 const QString kEdPathEditObjectName =
     QStringLiteral("cardiacEdVolumePathEdit");
 const QString kEsPathEditObjectName =
@@ -150,6 +155,8 @@ int main(int argc, char* argv[])
         QStringLiteral("cardiacClassificationHeader"));
     auto* const helperText = window.findChild<QLabel*>(
         QStringLiteral("cardiacClassificationHelperText"));
+    auto* const classificationStatusLabel = window.findChild<QLabel*>(
+        QStringLiteral("cardiacClassificationStatusLabel"));
     auto* const studyVolumesGroup = window.findChild<QGroupBox*>(
         QStringLiteral("cardiacStudyVolumesGroup"));
     auto* const aiResultGroup = window.findChild<QGroupBox*>(
@@ -167,6 +174,9 @@ int main(int argc, char* argv[])
     require(helperText != nullptr && !helperText->text().isEmpty() &&
                 helperText->wordWrap(),
             "cardiac presentation helper text is missing");
+    require(classificationStatusLabel != nullptr &&
+                classificationStatusLabel->text().isEmpty(),
+            "cardiac classification status is not initially empty");
     require(studyVolumesGroup != nullptr &&
                 studyVolumesGroup->title() == QStringLiteral("Study volumes"),
             "cardiac study-volumes group is missing");
@@ -394,6 +404,8 @@ int main(int argc, char* argv[])
     requireControlsEnabled(window, true, "synchronous validation failure state");
     require(window.resultWidget()->statusText() == synchronousFailureMessage,
             "synchronous validation failure was not forwarded to the result widget");
+    require(classificationStatusLabel->text() == kFailedClassificationStatus,
+            "synchronous validation failure changed the window failure status");
     QObject::disconnect(synchronousFailureConnection);
 
     QEventLoop failureEventLoop;
@@ -427,8 +439,16 @@ int main(int argc, char* argv[])
             "invalid ED path produced an unexpected failure message");
     require(window.resultWidget()->predictedClassText() == QStringLiteral("—"),
             "failure did not clear the predicted class presentation");
+    for (const QString& probabilityText :
+         window.resultWidget()->probabilityTexts())
+    {
+      require(probabilityText == QStringLiteral("—"),
+              "failure did not clear a probability presentation");
+    }
     require(window.resultWidget()->statusText() == failureMessage,
             "controlled failure was not forwarded to the result widget");
+    require(classificationStatusLabel->text() == kFailedClassificationStatus,
+            "controlled failure changed the window failure status");
 
 #if defined(MAIW_CARDIAC_MRI_REAL_ED_PATH) && defined(MAIW_CARDIAC_MRI_REAL_ES_PATH)
     const QString realEdPath = QString::fromUtf8(MAIW_CARDIAC_MRI_REAL_ED_PATH);
@@ -485,8 +505,18 @@ int main(int argc, char* argv[])
     requireControlsEnabled(window, true, "real classification success state");
     require(window.resultWidget()->predictedClassText() == successfulClassName,
             "real successful result was not forwarded to the result widget");
+    for (const QString& probabilityText :
+         window.resultWidget()->probabilityTexts())
+    {
+      require(probabilityText != QStringLiteral("—") &&
+                  probabilityText.endsWith(QStringLiteral(" %")),
+              "real successful probability presentation changed unexpectedly");
+    }
     require(window.resultWidget()->statusText().isEmpty(),
             "result widget retained an unexpected status after real success");
+    require(classificationStatusLabel->text() ==
+                kSuccessfulClassificationStatus,
+            "real success status omitted the cardiac input identity limitation");
 #endif
 
     std::cout << "Cardiac MRI classification window test passed." << '\n';
