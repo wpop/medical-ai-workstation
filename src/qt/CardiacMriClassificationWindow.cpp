@@ -3,11 +3,13 @@
 #include "maiw/qt/CardiacMriClassificationResultWidget.h"
 #include "maiw/qt/CardiacMriClassificationWorkflow.h"
 
+#include <QEvent>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QString>
 #include <QVBoxLayout>
@@ -104,30 +106,78 @@ CardiacMriClassificationWindow::resultWidget() const noexcept
 
 void CardiacMriClassificationWindow::browseEdVolume()
 {
+  if (edPathEdit_->hasFocus())
+  {
+    suppressNextEdEditingCommit_ = true;
+  }
+
   const QString selectedPath =
       QFileDialog::getOpenFileName(this,
                                    QStringLiteral("Select End-Diastolic Volume"),
                                    edPathEdit_->text(),
                                    medicalVolumeFileFilter());
-
-  if (!selectedPath.isEmpty())
-  {
-    edPathEdit_->setText(selectedPath);
-  }
+  suppressNextEdEditingCommit_ = false;
+  publishEdBrowseSelection(selectedPath);
 }
 
 void CardiacMriClassificationWindow::browseEsVolume()
 {
+  if (esPathEdit_->hasFocus())
+  {
+    suppressNextEsEditingCommit_ = true;
+  }
+
   const QString selectedPath =
       QFileDialog::getOpenFileName(this,
                                    QStringLiteral("Select End-Systolic Volume"),
                                    esPathEdit_->text(),
                                    medicalVolumeFileFilter());
+  suppressNextEsEditingCommit_ = false;
+  publishEsBrowseSelection(selectedPath);
+}
 
-  if (!selectedPath.isEmpty())
+void CardiacMriClassificationWindow::handleEdPathEditingFinished()
+{
+  if (std::exchange(suppressNextEdEditingCommit_, false))
   {
-    esPathEdit_->setText(selectedPath);
+    return;
   }
+
+  emit edVolumePathCommitted(edPathEdit_->text());
+}
+
+void CardiacMriClassificationWindow::handleEsPathEditingFinished()
+{
+  if (std::exchange(suppressNextEsEditingCommit_, false))
+  {
+    return;
+  }
+
+  emit esVolumePathCommitted(esPathEdit_->text());
+}
+
+void CardiacMriClassificationWindow::publishEdBrowseSelection(
+    const QString& selectedPath)
+{
+  if (selectedPath.isEmpty())
+  {
+    return;
+  }
+
+  edPathEdit_->setText(selectedPath);
+  emit edVolumePathCommitted(selectedPath);
+}
+
+void CardiacMriClassificationWindow::publishEsBrowseSelection(
+    const QString& selectedPath)
+{
+  if (selectedPath.isEmpty())
+  {
+    return;
+  }
+
+  esPathEdit_->setText(selectedPath);
+  emit esVolumePathCommitted(selectedPath);
 }
 
 void CardiacMriClassificationWindow::startClassification()
@@ -190,10 +240,13 @@ void CardiacMriClassificationWindow::initializeUi()
   edRowLayout->setContentsMargins(0, 0, 0, 0);
 
   edPathEdit_ = new QLineEdit(edRowWidget);
+  edPathEdit_->setObjectName(QStringLiteral("cardiacEdVolumePathEdit"));
   edPathEdit_->setPlaceholderText(
       QStringLiteral("Select the end-diastolic medical volume"));
 
   edBrowseButton_ = new QPushButton(QStringLiteral("Browse..."), edRowWidget);
+  edBrowseButton_->setObjectName(QStringLiteral("cardiacEdVolumeBrowseButton"));
+  edBrowseButton_->installEventFilter(this);
 
   edRowLayout->addWidget(edPathEdit_);
   edRowLayout->addWidget(edBrowseButton_);
@@ -205,10 +258,13 @@ void CardiacMriClassificationWindow::initializeUi()
   esRowLayout->setContentsMargins(0, 0, 0, 0);
 
   esPathEdit_ = new QLineEdit(esRowWidget);
+  esPathEdit_->setObjectName(QStringLiteral("cardiacEsVolumePathEdit"));
   esPathEdit_->setPlaceholderText(
       QStringLiteral("Select the end-systolic medical volume"));
 
   esBrowseButton_ = new QPushButton(QStringLiteral("Browse..."), esRowWidget);
+  esBrowseButton_->setObjectName(QStringLiteral("cardiacEsVolumeBrowseButton"));
+  esBrowseButton_->installEventFilter(this);
 
   esRowLayout->addWidget(esPathEdit_);
   esRowLayout->addWidget(esBrowseButton_);
@@ -235,6 +291,16 @@ void CardiacMriClassificationWindow::initializeUi()
           this,
           &CardiacMriClassificationWindow::browseEsVolume);
 
+  connect(edPathEdit_,
+          &QLineEdit::editingFinished,
+          this,
+          &CardiacMriClassificationWindow::handleEdPathEditingFinished);
+
+  connect(esPathEdit_,
+          &QLineEdit::editingFinished,
+          this,
+          &CardiacMriClassificationWindow::handleEsPathEditingFinished);
+
   connect(classifyButton_,
           &QPushButton::clicked,
           this,
@@ -246,6 +312,36 @@ void CardiacMriClassificationWindow::initializeUi()
    * viewer.
    */
   resize(680, 420);
+}
+
+bool CardiacMriClassificationWindow::eventFilter(QObject* watched, QEvent* event)
+{
+  if (event->type() == QEvent::MouseButtonPress &&
+      static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+  {
+    if (watched == edBrowseButton_ && edPathEdit_->hasFocus())
+    {
+      suppressNextEdEditingCommit_ = true;
+    }
+    else if (watched == esBrowseButton_ && esPathEdit_->hasFocus())
+    {
+      suppressNextEsEditingCommit_ = true;
+    }
+  }
+  else if (event->type() == QEvent::MouseButtonRelease &&
+           static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+  {
+    if (watched == edBrowseButton_ && edPathEdit_->hasFocus())
+    {
+      suppressNextEdEditingCommit_ = false;
+    }
+    else if (watched == esBrowseButton_ && esPathEdit_->hasFocus())
+    {
+      suppressNextEsEditingCommit_ = false;
+    }
+  }
+
+  return QWidget::eventFilter(watched, event);
 }
 
 void CardiacMriClassificationWindow::updateControls()

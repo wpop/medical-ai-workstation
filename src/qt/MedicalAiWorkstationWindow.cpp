@@ -24,6 +24,16 @@ MedicalAiWorkstationWindow::MedicalAiWorkstationWindow(
       std::move(classNames));
   splitter->addWidget(classificationWindow_);
 
+  connect(classificationWindow_,
+          &CardiacMriClassificationWindow::edVolumePathCommitted,
+          this,
+          &MedicalAiWorkstationWindow::loadCommittedVolumePath);
+
+  connect(classificationWindow_,
+          &CardiacMriClassificationWindow::esVolumePathCommitted,
+          this,
+          &MedicalAiWorkstationWindow::loadCommittedVolumePath);
+
   splitter->setStretchFactor(0, 4);
   splitter->setStretchFactor(1, 1);
   splitter->setChildrenCollapsible(false);
@@ -43,6 +53,16 @@ const CardiacMriClassificationWindow&
 MedicalAiWorkstationWindow::classificationWindow() const noexcept
 {
   return *classificationWindow_;
+}
+
+void MedicalAiWorkstationWindow::loadCommittedVolumePath(const QString& path)
+{
+  if (path.trimmed().isEmpty())
+  {
+    return;
+  }
+
+  viewerWorkspace_->loadVolume(path);
 }
 
 } // namespace maiw::qt

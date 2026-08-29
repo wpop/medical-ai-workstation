@@ -9,6 +9,7 @@
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QEvent;
 
 namespace maiw::qt
 {
@@ -86,6 +87,27 @@ public:
    */
   [[nodiscard]] const CardiacMriClassificationResultWidget* resultWidget() const noexcept;
 
+signals:
+  /**
+   * @brief Notify that the user committed the ED medical-volume path.
+   *
+   * The path is emitted after an accepted file selection or manual editing is
+   * finished. Classification is not started by this signal.
+   *
+   * @param path Committed ED volume path exactly as entered by the user.
+   */
+  void edVolumePathCommitted(const QString& path);
+
+  /**
+   * @brief Notify that the user committed the ES medical-volume path.
+   *
+   * The path is emitted after an accepted file selection or manual editing is
+   * finished. Classification is not started by this signal.
+   *
+   * @param path Committed ES volume path exactly as entered by the user.
+   */
+  void esVolumePathCommitted(const QString& path);
+
 private slots:
   /**
    * @brief Open a file-selection dialog for the ED medical volume.
@@ -102,6 +124,42 @@ private slots:
    * Cancelling the dialog leaves the existing value unchanged.
    */
   void browseEsVolume();
+
+  /**
+   * @brief Publish a manually completed ED path edit.
+   *
+   * An editingFinished notification caused by the same Browse activation is
+   * ignored because the Browse result independently determines whether a path
+   * is committed. Ordinary keyboard focus navigation remains a manual commit.
+   */
+  void handleEdPathEditingFinished();
+
+  /**
+   * @brief Publish a manually completed ES path edit.
+   *
+   * An editingFinished notification caused by the same Browse activation is
+   * ignored because the Browse result independently determines whether a path
+   * is committed. Ordinary keyboard focus navigation remains a manual commit.
+   */
+  void handleEsPathEditingFinished();
+
+  /**
+   * @brief Apply and publish an ED path selected through Browse.
+   *
+   * An empty selection represents cancellation and has no effect.
+   *
+   * @param selectedPath Path returned by the ED file-selection dialog.
+   */
+  void publishEdBrowseSelection(const QString& selectedPath);
+
+  /**
+   * @brief Apply and publish an ES path selected through Browse.
+   *
+   * An empty selection represents cancellation and has no effect.
+   *
+   * @param selectedPath Path returned by the ES file-selection dialog.
+   */
+  void publishEsBrowseSelection(const QString& selectedPath);
 
   /**
    * @brief Start classification using the currently selected ED and ES paths.
@@ -139,6 +197,14 @@ private slots:
   void handleClassificationFailed(const QString& message);
 
 private:
+  /**
+   * @brief Mark mouse activation of a Browse button before focus changes.
+   *
+   * This prevents the corresponding line edit from publishing its old value
+   * when the same mouse action transfers focus and opens Browse.
+   */
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
   /**
    * @brief Create widgets, layouts, and signal/slot connections.
    *
@@ -212,6 +278,9 @@ private:
    * The pointer is non-owning. Qt parent ownership controls its lifetime.
    */
   CardiacMriClassificationResultWidget* resultWidget_ = nullptr;
+
+  bool suppressNextEdEditingCommit_ = false;
+  bool suppressNextEsEditingCommit_ = false;
 };
 
 } // namespace maiw::qt

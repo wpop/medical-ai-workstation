@@ -4,6 +4,7 @@
 #include "maiw/viewer/ViewerWorkspaceWidget.h"
 
 #include <QMainWindow>
+#include <QString>
 
 namespace maiw::qt
 {
@@ -46,6 +47,16 @@ public:
   classificationWindow() const noexcept;
 
 private:
+  /**
+   * @brief Request viewer loading for a committed non-empty volume path.
+   *
+   * Whitespace-only paths are ignored so they cannot replace the currently
+   * displayed volume or start a viewer workflow.
+   *
+   * @param path Path committed by the cardiac study input widget.
+   */
+  void loadCommittedVolumePath(const QString& path);
+
   // Qt parent ownership manages both children; these pointers are non-owning.
   viewer::ViewerWorkspaceWidget* viewerWorkspace_ = nullptr;
   CardiacMriClassificationWindow* classificationWindow_ = nullptr;
