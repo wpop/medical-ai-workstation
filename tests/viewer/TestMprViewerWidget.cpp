@@ -1,6 +1,7 @@
 #include "maiw/viewer/MprViewerWidget.h"
 
 #include <QApplication>
+#include <QLayout>
 #include <QRect>
 
 #include <cmath>
@@ -101,8 +102,9 @@ int main(int argc, char* argv[])
       requireEmptyState(widget, "initial state");
 
       widget.resize(900, 600);
-      widget.show();
-      QApplication::processEvents();
+      require(widget.layout() != nullptr,
+              "MPR viewer widget has no presentation layout");
+      widget.layout()->activate();
       requireGridGeometry(widget);
 
       const auto maximum = std::numeric_limits<std::size_t>::max();
