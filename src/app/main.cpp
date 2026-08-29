@@ -8,6 +8,7 @@
 #include <QCommandLineParser>
 #include <QMessageBox>
 #include <QString>
+#include <QTimer>
 
 #include <onnxruntime_cxx_api.h>
 
@@ -18,6 +19,8 @@
 
 namespace
 {
+
+constexpr int kStartupMaximizeDelayMilliseconds = 100;
 
 /**
  * @brief Return the deployment-package command-line option.
@@ -118,6 +121,14 @@ int main(int argc, char* argv[])
         classNames);
 
     window.show();
+
+    QTimer::singleShot(
+        kStartupMaximizeDelayMilliseconds,
+        &window,
+        [&window]()
+        {
+          window.showMaximized();
+        });
 
     return application.exec();
   }
