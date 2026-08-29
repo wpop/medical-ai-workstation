@@ -52,6 +52,28 @@ MprViewerWidget::MprViewerWidget(QWidget* parent)
   sagittalViewer_->setOrientation(qvp::SliceOrientation::Sagittal);
   coronalViewer_->setOrientation(qvp::SliceOrientation::Coronal);
 
+  connect(axialViewer_,
+          &SliceViewerWidget::imagePointChanged,
+          this,
+          [this](QPointF imagePoint)
+          {
+            setPositionFromImagePoint(qvp::SliceOrientation::Axial, imagePoint);
+          });
+  connect(sagittalViewer_,
+          &SliceViewerWidget::imagePointChanged,
+          this,
+          [this](QPointF imagePoint)
+          {
+            setPositionFromImagePoint(qvp::SliceOrientation::Sagittal, imagePoint);
+          });
+  connect(coronalViewer_,
+          &SliceViewerWidget::imagePointChanged,
+          this,
+          [this](QPointF imagePoint)
+          {
+            setPositionFromImagePoint(qvp::SliceOrientation::Coronal, imagePoint);
+          });
+
   layout->addWidget(axialViewer_);
   layout->addWidget(sagittalViewer_);
   layout->addWidget(coronalViewer_);

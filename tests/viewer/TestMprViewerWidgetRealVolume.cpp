@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QMetaObject>
 #include <QPointF>
 #include <QString>
 #include <QThread>
@@ -163,6 +164,41 @@ void requireSynchronizedState(const maiw::viewer::MprViewerWidget& widget,
   requireSynchronizedCrosshairs(widget, position, context);
 }
 
+QPointF normalizedPositionForPixel(std::size_t imageX,
+                                   std::size_t imageY,
+                                   const QSize& imageSize)
+{
+  require(imageSize.width() > 1 && imageSize.height() > 1,
+          "real MPR slice image is too small for normalized navigation");
+
+  return QPointF(
+      (2.0 * static_cast<double>(imageX) /
+       static_cast<double>(imageSize.width() - 1)) -
+          1.0,
+      1.0 -
+          (2.0 * static_cast<double>(imageY) /
+           static_cast<double>(imageSize.height() - 1)));
+}
+
+void emitNormalizedCrosshair(
+    const maiw::viewer::SliceViewerWidget& viewer,
+    std::size_t imageX,
+    std::size_t imageY)
+{
+  auto* const qtvpViewer =
+      viewer.findChild<QObject*>(QStringLiteral("maiwSliceOpenGLViewer"));
+  require(qtvpViewer != nullptr,
+          "qtvp slice viewer testing hook is missing");
+
+  const QPointF normalizedPosition =
+      normalizedPositionForPixel(imageX, imageY, viewer.imageSize());
+  require(QMetaObject::invokeMethod(qtvpViewer,
+                                    "crosshairPositionChanged",
+                                    Qt::DirectConnection,
+                                    Q_ARG(QPointF, normalizedPosition)),
+          "failed to emit a normalized qtvp crosshair position");
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -245,6 +281,39 @@ int main(int argc, char* argv[])
                                coronalResult,
                                "coronal image-point mapping");
 
+      const qvp::VoxelIndex3D interactiveAxialResult{
+          volume->width() / 5,
+          volume->height() / 5,
+          coronalResult.z};
+      emitNormalizedCrosshair(widget.axialViewer(),
+                              interactiveAxialResult.x,
+                              interactiveAxialResult.y);
+      requireSynchronizedState(widget,
+                               interactiveAxialResult,
+                               "interactive axial qtvp mapping");
+
+      const qvp::VoxelIndex3D interactiveSagittalResult{
+          interactiveAxialResult.x,
+          volume->height() / 6,
+          volume->depth() / 5};
+      emitNormalizedCrosshair(widget.sagittalViewer(),
+                              interactiveSagittalResult.y,
+                              interactiveSagittalResult.z);
+      requireSynchronizedState(widget,
+                               interactiveSagittalResult,
+                               "interactive sagittal qtvp mapping");
+
+      const qvp::VoxelIndex3D interactiveCoronalResult{
+          volume->width() / 6,
+          interactiveSagittalResult.y,
+          volume->depth() / 6};
+      emitNormalizedCrosshair(widget.coronalViewer(),
+                              interactiveCoronalResult.x,
+                              interactiveCoronalResult.z);
+      requireSynchronizedState(widget,
+                               interactiveCoronalResult,
+                               "interactive coronal qtvp mapping");
+
       const auto maximum = std::numeric_limits<std::size_t>::max();
       widget.setPositionFromImagePoint(
           qvp::SliceOrientation::Axial,
@@ -252,7 +321,7 @@ int main(int argc, char* argv[])
       const qvp::VoxelIndex3D clamped{
           0,
           volume->height() - 1,
-          coronalResult.z};
+          interactiveCoronalResult.z};
       requireSynchronizedState(widget, clamped, "clamped image-point mapping");
 
       const auto physicalPosition = widget.physicalPosition();

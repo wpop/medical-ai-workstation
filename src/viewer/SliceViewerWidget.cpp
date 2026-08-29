@@ -10,6 +10,7 @@
 #include <QLineF>
 #include <QPainter>
 #include <QPen>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -19,6 +20,35 @@
 namespace maiw::viewer
 {
 
+namespace
+{
+
+std::optional<QPointF> normalizedToPixelCenter(
+    QPointF normalizedPosition,
+    const QSize& imageSize) noexcept
+{
+  if (imageSize.width() <= 0 || imageSize.height() <= 0 ||
+      !std::isfinite(normalizedPosition.x()) ||
+      !std::isfinite(normalizedPosition.y()))
+  {
+    return std::nullopt;
+  }
+
+  const double normalizedX = std::clamp(normalizedPosition.x(), -1.0, 1.0);
+  const double normalizedY = std::clamp(normalizedPosition.y(), -1.0, 1.0);
+  const double pixelX =
+      ((normalizedX + 1.0) * 0.5) *
+          static_cast<double>(imageSize.width() - 1) +
+      0.5;
+  const double pixelY =
+      ((1.0 - normalizedY) * 0.5) *
+          static_cast<double>(imageSize.height() - 1) +
+      0.5;
+  return QPointF(pixelX, pixelY);
+}
+
+} // namespace
+
 SliceViewerWidget::SliceViewerWidget(QWidget* parent)
     : QWidget(parent)
 {
@@ -26,9 +56,15 @@ SliceViewerWidget::SliceViewerWidget(QWidget* parent)
   layout->setContentsMargins(0, 0, 0, 0);
 
   viewer_ = new qvp::OpenGLSliceViewer(this);
+  viewer_->setObjectName(QStringLiteral("maiwSliceOpenGLViewer"));
   viewer_->setCrosshairVisible(false);
   viewer_->setOrientation(orientation_);
   layout->addWidget(viewer_);
+
+  connect(viewer_,
+          &qvp::OpenGLSliceViewer::crosshairPositionChanged,
+          this,
+          &SliceViewerWidget::handleViewerCrosshairPositionChanged);
 }
 
 void SliceViewerWidget::setVolume(const qvp::VolumeData* volume)
@@ -137,6 +173,17 @@ void SliceViewerWidget::refresh()
   presentCurrentImage();
 }
 
+void SliceViewerWidget::handleViewerCrosshairPositionChanged(
+    QPointF normalizedPosition)
+{
+  const auto imagePoint =
+      normalizedToPixelCenter(normalizedPosition, sliceImage_.size());
+  if (imagePoint.has_value())
+  {
+    emit imagePointChanged(*imagePoint);
+  }
+}
+
 void SliceViewerWidget::clampCrosshairPosition() noexcept
 {
   if (!crosshairPosition_.has_value() || sliceImage_.isNull() ||
@@ -160,6 +207,7 @@ void SliceViewerWidget::presentCurrentImage()
 {
   if (sliceImage_.isNull())
   {
+    const QSignalBlocker blocker(viewer_);
     viewer_->setSliceImage(QImage{});
     return;
   }
@@ -188,6 +236,7 @@ void SliceViewerWidget::presentCurrentImage()
     painter.drawLine(horizontal);
   }
 
+  const QSignalBlocker blocker(viewer_);
   viewer_->setSliceImage(presentationImage, sliceSpacingX_, sliceSpacingY_);
 }
 

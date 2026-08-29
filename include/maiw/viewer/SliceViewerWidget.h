@@ -31,6 +31,8 @@ namespace maiw::viewer
  */
 class SliceViewerWidget final : public QWidget
 {
+  Q_OBJECT
+
 public:
   /**
    * @brief Construct an empty axial slice viewer.
@@ -133,7 +135,20 @@ public:
    */
   void refresh();
 
+signals:
+  /**
+   * @brief Notify that the user moved the qtvp crosshair over this slice.
+   *
+   * The position is converted from qtvp normalized image-local coordinates to
+   * this class's slice-image pixel-space contract, with centers at
+   * `(index + 0.5)`.
+   *
+   * @param imagePoint Crosshair position in slice-image pixel space.
+   */
+  void imagePointChanged(QPointF imagePoint);
+
 private:
+  void handleViewerCrosshairPositionChanged(QPointF normalizedPosition);
   void clampSliceIndex() noexcept;
   void clampCrosshairPosition() noexcept;
   void presentCurrentImage();
