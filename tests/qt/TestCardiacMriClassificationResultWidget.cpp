@@ -3,6 +3,7 @@
 #include "maiw/qt/CardiacMriClassificationResultWidget.h"
 
 #include <QApplication>
+#include <QLabel>
 #include <QString>
 
 #include <array>
@@ -55,6 +56,25 @@ int main(int argc, char* argv[])
     CardiacMriClassificationResultWidget widget(kClassNames);
     requireIdlePresentation(widget, "initial state");
     require(widget.statusText().isEmpty(), "initial status is not empty");
+    auto* const predictedClassValue = widget.findChild<QLabel*>(
+        QStringLiteral("cardiacPredictedClassValueLabel"));
+    auto* const probabilityHeading = widget.findChild<QLabel*>(
+        QStringLiteral("cardiacClassProbabilitiesLabel"));
+    require(predictedClassValue != nullptr &&
+                predictedClassValue->font().bold() &&
+                predictedClassValue->font().pointSizeF() >
+                    widget.font().pointSizeF(),
+            "predicted class presentation is not visually emphasized");
+    require(probabilityHeading != nullptr &&
+                probabilityHeading->text() ==
+                    QStringLiteral("Class probabilities") &&
+                probabilityHeading->font().bold(),
+            "class-probabilities subheading is missing or not emphasized");
+
+    widget.show();
+    QApplication::processEvents();
+    require(predictedClassValue->isVisible() && probabilityHeading->isVisible(),
+            "classification result hierarchy is not visible");
 
     const CardiacMriClassificationResult::RawLogits logits{
         0.0F, 0.69314718F, 1.0986123F, 1.3862944F, 1.6094379F};
