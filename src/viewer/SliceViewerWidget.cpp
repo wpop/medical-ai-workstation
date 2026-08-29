@@ -6,11 +6,12 @@
 #include "qtviewerpro/processing/SliceImageConverter.h"
 #include "qtviewerpro/render/OpenGLSliceViewer.h"
 
+#include <QEvent>
 #include <QImage>
-#include <QLineF>
-#include <QPainter>
-#include <QPen>
+#include <QPalette>
+#include <QRectF>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -47,6 +48,31 @@ std::optional<QPointF> normalizedToPixelCenter(
   return QPointF(pixelX, pixelY);
 }
 
+QWidget* createCrosshairLine(QWidget* parent, const QString& objectName)
+{
+  auto* line = new QWidget(parent);
+  line->setObjectName(objectName);
+  line->setAttribute(Qt::WA_TransparentForMouseEvents);
+  line->setFocusPolicy(Qt::NoFocus);
+
+  QPalette palette = line->palette();
+  palette.setColor(QPalette::Window, Qt::white);
+  line->setPalette(palette);
+  line->setAutoFillBackground(true);
+  line->hide();
+  return line;
+}
+
+double pixelCenterRatio(double coordinate, int pixelCount) noexcept
+{
+  if (pixelCount <= 1)
+  {
+    return 0.5;
+  }
+
+  return (coordinate - 0.5) / static_cast<double>(pixelCount - 1);
+}
+
 } // namespace
 
 SliceViewerWidget::SliceViewerWidget(QWidget* parent)
@@ -61,10 +87,38 @@ SliceViewerWidget::SliceViewerWidget(QWidget* parent)
   viewer_->setOrientation(orientation_);
   layout->addWidget(viewer_);
 
+  verticalCrosshairLine_ = createCrosshairLine(
+      viewer_, QStringLiteral("maiwVerticalCrosshairOverlay"));
+  horizontalCrosshairLine_ = createCrosshairLine(
+      viewer_, QStringLiteral("maiwHorizontalCrosshairOverlay"));
+  viewer_->installEventFilter(this);
+
   connect(viewer_,
           &qvp::OpenGLSliceViewer::crosshairPositionChanged,
           this,
           &SliceViewerWidget::handleViewerCrosshairPositionChanged);
+}
+
+bool SliceViewerWidget::eventFilter(QObject* watched, QEvent* event)
+{
+  if (watched == viewer_)
+  {
+    switch (event->type())
+    {
+    case QEvent::Resize:
+    case QEvent::Show:
+      updateCrosshairOverlay();
+      break;
+    case QEvent::MouseMove:
+    case QEvent::Wheel:
+      QTimer::singleShot(0, this, &SliceViewerWidget::updateCrosshairOverlay);
+      break;
+    default:
+      break;
+    }
+  }
+
+  return QWidget::eventFilter(watched, event);
 }
 
 void SliceViewerWidget::setVolume(const qvp::VolumeData* volume)
@@ -209,35 +263,112 @@ void SliceViewerWidget::presentCurrentImage()
   {
     const QSignalBlocker blocker(viewer_);
     viewer_->setSliceImage(QImage{});
+    updateCrosshairOverlay();
     return;
   }
 
-  QImage presentationImage = sliceImage_;
-  if (crosshairPosition_.has_value())
+  const QSignalBlocker blocker(viewer_);
+  viewer_->setSliceImage(sliceImage_, sliceSpacingX_, sliceSpacingY_);
+  updateCrosshairOverlay();
+}
+
+void SliceViewerWidget::updateCrosshairOverlay()
+{
+  if (!crosshairPosition_.has_value() || sliceImage_.isNull() ||
+      viewer_->width() <= 0 || viewer_->height() <= 0)
   {
-    presentationImage = sliceImage_.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QPainter painter(&presentationImage);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-
-    const QPointF position = *crosshairPosition_;
-    const QLineF vertical(position.x(), 0.0, position.x(), presentationImage.height());
-    const QLineF horizontal(0.0, position.y(), presentationImage.width(), position.y());
-
-    QPen outlinePen(Qt::black);
-    outlinePen.setWidth(2);
-    painter.setPen(outlinePen);
-    painter.drawLine(vertical);
-    painter.drawLine(horizontal);
-
-    QPen innerPen(Qt::white);
-    innerPen.setWidth(1);
-    painter.setPen(innerPen);
-    painter.drawLine(vertical);
-    painter.drawLine(horizontal);
+    verticalCrosshairLine_->hide();
+    horizontalCrosshairLine_->hide();
+    return;
   }
 
-  const QSignalBlocker blocker(viewer_);
-  viewer_->setSliceImage(presentationImage, sliceSpacingX_, sliceSpacingY_);
+  const double viewportWidth = static_cast<double>(viewer_->width());
+  const double viewportHeight = static_cast<double>(viewer_->height());
+  const double widgetAspect = viewportWidth / viewportHeight;
+  const double safeSpacingX = sliceSpacingX_ > 0.0F ? sliceSpacingX_ : 1.0F;
+  const double safeSpacingY = sliceSpacingY_ > 0.0F ? sliceSpacingY_ : 1.0F;
+  const double imageAspect =
+      (static_cast<double>(sliceImage_.width()) *
+       safeSpacingX) /
+      (static_cast<double>(sliceImage_.height()) *
+       safeSpacingY);
+
+  double displayedWidth = viewportWidth;
+  double displayedHeight = viewportHeight;
+  if (imageAspect > widgetAspect)
+  {
+    displayedHeight = viewportWidth / imageAspect;
+  }
+  else
+  {
+    displayedWidth = viewportHeight * imageAspect;
+  }
+
+  const double zoomFactor = static_cast<double>(viewer_->zoomFactor());
+  displayedWidth *= zoomFactor;
+  displayedHeight *= zoomFactor;
+
+  const QPointF panOffset = viewer_->panOffset();
+  const QPointF imageCenter(
+      ((panOffset.x() + 1.0) * viewportWidth) / 2.0,
+      ((1.0 - panOffset.y()) * viewportHeight) / 2.0);
+  const QRectF imageRectangle(
+      imageCenter.x() - (displayedWidth / 2.0),
+      imageCenter.y() - (displayedHeight / 2.0),
+      displayedWidth,
+      displayedHeight);
+  const QRectF visibleImageRectangle =
+      imageRectangle.intersected(QRectF(viewer_->rect()));
+
+  const int left = static_cast<int>(std::ceil(visibleImageRectangle.left()));
+  const int top = static_cast<int>(std::ceil(visibleImageRectangle.top()));
+  const int right = static_cast<int>(std::floor(visibleImageRectangle.right()));
+  const int bottom = static_cast<int>(std::floor(visibleImageRectangle.bottom()));
+  if (right <= left || bottom <= top)
+  {
+    verticalCrosshairLine_->hide();
+    horizontalCrosshairLine_->hide();
+    return;
+  }
+
+  const double crosshairX =
+      imageRectangle.left() +
+      (pixelCenterRatio(crosshairPosition_->x(), sliceImage_.width()) *
+       imageRectangle.width());
+  const double crosshairY =
+      imageRectangle.top() +
+      (pixelCenterRatio(crosshairPosition_->y(), sliceImage_.height()) *
+       imageRectangle.height());
+
+  if (crosshairX >= visibleImageRectangle.left() &&
+      crosshairX <= visibleImageRectangle.right())
+  {
+    const int x = std::clamp(static_cast<int>(std::lround(crosshairX)),
+                             left,
+                             right - 1);
+    verticalCrosshairLine_->setGeometry(x, top, 1, bottom - top);
+    verticalCrosshairLine_->show();
+    verticalCrosshairLine_->raise();
+  }
+  else
+  {
+    verticalCrosshairLine_->hide();
+  }
+
+  if (crosshairY >= visibleImageRectangle.top() &&
+      crosshairY <= visibleImageRectangle.bottom())
+  {
+    const int y = std::clamp(static_cast<int>(std::lround(crosshairY)),
+                             top,
+                             bottom - 1);
+    horizontalCrosshairLine_->setGeometry(left, y, right - left, 1);
+    horizontalCrosshairLine_->show();
+    horizontalCrosshairLine_->raise();
+  }
+  else
+  {
+    horizontalCrosshairLine_->hide();
+  }
 }
 
 void SliceViewerWidget::clampSliceIndex() noexcept

@@ -5,10 +5,15 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QLayout>
+#include <QPointF>
+#include <QRectF>
 #include <QString>
 #include <QThread>
 #include <QTimer>
+#include <QWidget>
 
+#include <cmath>
 #include <cstddef>
 #include <iostream>
 #include <limits>
@@ -53,6 +58,119 @@ void validateOrientation(maiw::viewer::SliceViewerWidget& widget,
   widget.setSliceIndex(std::numeric_limits<std::size_t>::max());
   require(widget.sliceIndex() == expectedSliceCount - 1,
           name + " out-of-range slice index was not clamped");
+}
+
+struct SliceDisplayGeometry
+{
+  qvp::SliceOrientation orientation;
+  float spacingX;
+  float spacingY;
+  const char* name;
+};
+
+QRectF fittedImageRectangle(const QSize& viewportSize,
+                            const QSize& imageSize,
+                            float spacingX,
+                            float spacingY)
+{
+  const double viewportWidth = static_cast<double>(viewportSize.width());
+  const double viewportHeight = static_cast<double>(viewportSize.height());
+  const double viewportAspect = viewportWidth / viewportHeight;
+  const double imageAspect =
+      (static_cast<double>(imageSize.width()) * spacingX) /
+      (static_cast<double>(imageSize.height()) * spacingY);
+
+  double displayedWidth = viewportWidth;
+  double displayedHeight = viewportHeight;
+  if (imageAspect > viewportAspect)
+  {
+    displayedHeight = viewportWidth / imageAspect;
+  }
+  else
+  {
+    displayedWidth = viewportHeight * imageAspect;
+  }
+
+  return QRectF((viewportWidth - displayedWidth) / 2.0,
+                (viewportHeight - displayedHeight) / 2.0,
+                displayedWidth,
+                displayedHeight);
+}
+
+void requireOverlayInsideImage(const QWidget& overlay,
+                               const QRectF& imageRectangle,
+                               const std::string& context)
+{
+  const QRect geometry = overlay.geometry();
+  constexpr double roundingTolerance = 1.0;
+  require(static_cast<double>(geometry.left()) >=
+              imageRectangle.left() - roundingTolerance &&
+              static_cast<double>(geometry.top()) >=
+                  imageRectangle.top() - roundingTolerance &&
+              static_cast<double>(geometry.x() + geometry.width()) <=
+                  imageRectangle.right() + roundingTolerance &&
+              static_cast<double>(geometry.y() + geometry.height()) <=
+                  imageRectangle.bottom() + roundingTolerance,
+          context + ": overlay extends outside the fitted image rectangle");
+}
+
+void validateCrosshairOverlay(maiw::viewer::SliceViewerWidget& widget,
+                              const SliceDisplayGeometry& displayGeometry,
+                              const QSize& viewportSize,
+                              const std::string& context)
+{
+  widget.setOrientation(displayGeometry.orientation);
+  widget.resize(viewportSize);
+  widget.layout()->activate();
+  widget.setCrosshairPosition(
+      QPointF(static_cast<double>(widget.imageSize().width()) / 2.0,
+              static_cast<double>(widget.imageSize().height()) / 2.0));
+  QApplication::processEvents();
+
+  auto* const viewer =
+      widget.findChild<QWidget*>(QStringLiteral("maiwSliceOpenGLViewer"));
+  auto* const verticalLine =
+      widget.findChild<QWidget*>(QStringLiteral("maiwVerticalCrosshairOverlay"));
+  auto* const horizontalLine =
+      widget.findChild<QWidget*>(QStringLiteral("maiwHorizontalCrosshairOverlay"));
+  require(viewer != nullptr, context + ": qtvp viewer is missing");
+  require(verticalLine != nullptr && horizontalLine != nullptr,
+          context + ": crosshair overlays are missing");
+  require(verticalLine->parentWidget() == viewer &&
+              horizontalLine->parentWidget() == viewer,
+          context + ": crosshair overlays are not owned by the qtvp viewer");
+  require(verticalLine->testAttribute(Qt::WA_TransparentForMouseEvents) &&
+              horizontalLine->testAttribute(Qt::WA_TransparentForMouseEvents),
+          context + ": crosshair overlays intercept mouse events");
+  require(!verticalLine->isHidden() && !horizontalLine->isHidden(),
+          context + ": crosshair overlays are hidden");
+  require(verticalLine->width() <= 2 && horizontalLine->height() <= 2,
+          context + ": crosshair overlay exceeds two logical pixels");
+  require(verticalLine->width() == 1 && horizontalLine->height() == 1,
+          context + ": crosshair overlay is not one logical pixel");
+
+  const QRectF imageRectangle =
+      fittedImageRectangle(viewer->size(),
+                           widget.imageSize(),
+                           displayGeometry.spacingX,
+                           displayGeometry.spacingY);
+  requireOverlayInsideImage(*verticalLine,
+                            imageRectangle,
+                            context + " vertical line");
+  requireOverlayInsideImage(*horizontalLine,
+                            imageRectangle,
+                            context + " horizontal line");
+  constexpr double geometryTolerance = 2.0;
+  require(std::abs(static_cast<double>(verticalLine->x()) -
+                       imageRectangle.center().x()) <= geometryTolerance &&
+              std::abs(static_cast<double>(horizontalLine->y()) -
+                       imageRectangle.center().y()) <= geometryTolerance,
+          context + ": crosshair overlay is not mapped to the image center");
+  require(std::abs(static_cast<double>(verticalLine->height()) -
+                       imageRectangle.height()) <= geometryTolerance &&
+              std::abs(static_cast<double>(horizontalLine->width()) -
+                       imageRectangle.width()) <= geometryTolerance,
+          context + ": crosshair lines do not match the fitted image extent");
 }
 
 } // namespace
@@ -163,6 +281,35 @@ int main(int argc, char* argv[])
       maiw::viewer::SliceViewerWidget widget;
       widget.setVolume(volume.get());
 
+      const SliceDisplayGeometry axialDisplay{
+          qvp::SliceOrientation::Axial,
+          volume->spacingX(),
+          volume->spacingY(),
+          "axial"};
+      const SliceDisplayGeometry sagittalDisplay{
+          qvp::SliceOrientation::Sagittal,
+          volume->spacingY(),
+          volume->spacingZ(),
+          "sagittal"};
+      const SliceDisplayGeometry coronalDisplay{
+          qvp::SliceOrientation::Coronal,
+          volume->spacingX(),
+          volume->spacingZ(),
+          "coronal"};
+
+      for (const auto& display :
+           {axialDisplay, sagittalDisplay, coronalDisplay})
+      {
+        validateCrosshairOverlay(widget,
+                                 display,
+                                 QSize(640, 480),
+                                 std::string(display.name) + " initial size");
+        validateCrosshairOverlay(widget,
+                                 display,
+                                 QSize(960, 540),
+                                 std::string(display.name) + " resized");
+      }
+
       require(widget.hasVolume(),
               "widget did not retain the real volume assignment");
       validateOrientation(widget,
@@ -179,12 +326,19 @@ int main(int argc, char* argv[])
                           "coronal");
 
       widget.clearVolume();
+      auto* const verticalLine = widget.findChild<QWidget*>(
+          QStringLiteral("maiwVerticalCrosshairOverlay"));
+      auto* const horizontalLine = widget.findChild<QWidget*>(
+          QStringLiteral("maiwHorizontalCrosshairOverlay"));
       require(!widget.hasVolume(),
               "widget retained the volume after clear");
       require(widget.sliceCount() == 0,
               "cleared widget retained a slice count");
       require(widget.sliceIndex() == 0,
               "cleared widget retained a slice index");
+      require(verticalLine != nullptr && horizontalLine != nullptr &&
+                  verticalLine->isHidden() && horizontalLine->isHidden(),
+              "cleared widget retained visible crosshair overlays");
 
       widget.setVolume(volume.get());
       require(widget.hasVolume(),

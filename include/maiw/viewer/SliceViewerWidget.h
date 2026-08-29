@@ -18,6 +18,9 @@ class VolumeData;
 
 } // namespace qvp
 
+class QEvent;
+class QObject;
+
 namespace maiw::viewer
 {
 
@@ -148,10 +151,15 @@ signals:
   void imagePointChanged(QPointF imagePoint);
 
 private:
+  /** @brief Keep the overlay aligned after qtvp viewport geometry changes. */
+  bool eventFilter(QObject* watched, QEvent* event) override;
   void handleViewerCrosshairPositionChanged(QPointF normalizedPosition);
   void clampSliceIndex() noexcept;
   void clampCrosshairPosition() noexcept;
   void presentCurrentImage();
+
+  /** @brief Map the pixel-space crosshair into the fitted display rectangle. */
+  void updateCrosshairOverlay();
 
   /**
    * @brief Externally owned volume observed by this widget.
@@ -164,8 +172,10 @@ private:
   float sliceSpacingY_ = 1.0F;
   std::optional<QPointF> crosshairPosition_;
 
-  // Qt parent ownership manages the viewer; this pointer is non-owning.
+  // Qt parent ownership manages these widgets; the pointers are non-owning.
   qvp::OpenGLSliceViewer* viewer_ = nullptr;
+  QWidget* verticalCrosshairLine_ = nullptr;
+  QWidget* horizontalCrosshairLine_ = nullptr;
 };
 
 } // namespace maiw::viewer
