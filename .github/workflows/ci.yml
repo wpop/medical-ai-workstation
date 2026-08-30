@@ -80,7 +80,9 @@ jobs:
             libinsighttoolkit5-dev \
             libopencv-dev \
             nlohmann-json3-dev \
-            qt6-base-dev
+            qt6-base-dev \
+            xauth \
+            xvfb
 
       - name: Install ONNX Runtime
         run: |
@@ -117,3 +119,15 @@ jobs:
 
       - name: Test Qt integration
         run: ctest --test-dir build-qt-integration --build-config Release --output-on-failure
+
+      - name: Smoke test installed application
+        run: |
+          stage_dir="$(mktemp -d "${RUNNER_TEMP}/maiw-install-smoke.XXXXXX")"
+          cmake --install build-qt-integration --prefix "${stage_dir}"
+          test -x "${stage_dir}/bin/medical-ai-workstation"
+          version_output="$(
+            QT_QPA_PLATFORM=xcb \
+              xvfb-run -a "${stage_dir}/bin/medical-ai-workstation" --version
+          )"
+          printf '%s\n' "${version_output}"
+          test "${version_output}" = "Medical AI Workstation 1.0.0"
