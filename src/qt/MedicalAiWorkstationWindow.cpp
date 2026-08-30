@@ -1,6 +1,10 @@
 #include "maiw/qt/MedicalAiWorkstationWindow.h"
 
+#include "maiw/qt/CardiacMriClassificationWorkflow.h"
+
+#include <QCloseEvent>
 #include <QSplitter>
+#include <QStatusBar>
 #include <QString>
 
 #include <utility>
@@ -8,11 +12,19 @@
 namespace maiw::qt
 {
 
+namespace
+{
+
+constexpr int kActiveOperationCloseStatusMilliseconds = 5000;
+
+} // namespace
+
 MedicalAiWorkstationWindow::MedicalAiWorkstationWindow(
     CardiacMriClassificationWorkflow& classificationWorkflow,
     cardiac::CardiacMriDeploymentMetadata::ClassNames classNames,
     QWidget* parent)
-    : QMainWindow(parent)
+    : QMainWindow(parent),
+      classificationWorkflow_(classificationWorkflow)
 {
   auto* splitter = new QSplitter(Qt::Horizontal, this);
 
@@ -56,6 +68,21 @@ const CardiacMriClassificationWindow&
 MedicalAiWorkstationWindow::classificationWindow() const noexcept
 {
   return *classificationWindow_;
+}
+
+void MedicalAiWorkstationWindow::closeEvent(QCloseEvent* event)
+{
+  if (classificationWorkflow_.isRunning() || viewerWorkspace_->isLoading())
+  {
+    statusBar()->showMessage(
+        QStringLiteral("An operation is still in progress. "
+                       "Please wait for it to finish before closing."),
+        kActiveOperationCloseStatusMilliseconds);
+    event->ignore();
+    return;
+  }
+
+  QMainWindow::closeEvent(event);
 }
 
 void MedicalAiWorkstationWindow::loadCommittedVolumePath(const QString& path)

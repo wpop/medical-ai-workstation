@@ -845,6 +845,47 @@ if(BUILD_TESTING)
                AND EXISTS "${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
                AND MAIW_CARDIAC_MRI_REAL_ES_PATH
                AND EXISTS "${MAIW_CARDIAC_MRI_REAL_ES_PATH}")
+                add_executable(test-medical-ai-workstation-lifecycle
+                    tests/qt/TestMedicalAiWorkstationLifecycle.cpp
+                )
+
+                target_compile_definitions(test-medical-ai-workstation-lifecycle
+                    PRIVATE
+                        MAIW_CARDIAC_MRI_PACKAGE_DIR="${MAIW_CARDIAC_MRI_PACKAGE_DIR}"
+                        MAIW_CARDIAC_MRI_REAL_ED_PATH="${MAIW_CARDIAC_MRI_REAL_ED_PATH}"
+                        MAIW_CARDIAC_MRI_REAL_ES_PATH="${MAIW_CARDIAC_MRI_REAL_ES_PATH}"
+                )
+
+                target_link_libraries(test-medical-ai-workstation-lifecycle
+                    PRIVATE
+                        maiw-workstation-ui
+                )
+
+                if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                    target_compile_options(test-medical-ai-workstation-lifecycle
+                        PRIVATE
+                            -Wall
+                            -Wextra
+                            -Wpedantic
+                    )
+                endif()
+
+                set_target_properties(test-medical-ai-workstation-lifecycle
+                    PROPERTIES
+                        BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+                )
+
+                add_test(
+                    NAME medical-ai-workstation-lifecycle
+                    COMMAND test-medical-ai-workstation-lifecycle
+                )
+
+                set_tests_properties(medical-ai-workstation-lifecycle
+                    PROPERTIES
+                        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                        TIMEOUT 30
+                )
+
                 add_executable(test-medical-ai-workstation-study-coordination
                     tests/qt/TestMedicalAiWorkstationStudyCoordination.cpp
                 )
