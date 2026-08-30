@@ -6,8 +6,12 @@
 #include <QMainWindow>
 #include <QString>
 
+class QCloseEvent;
+
 namespace maiw::qt
 {
+
+class CardiacMriClassificationWorkflow;
 
 /**
  * @brief Composes medical-image viewing and cardiac classification in one window.
@@ -46,6 +50,18 @@ public:
   [[nodiscard]] const CardiacMriClassificationWindow&
   classificationWindow() const noexcept;
 
+protected:
+  /**
+   * @brief Reject close requests while asynchronous workstation work is active.
+   *
+   * Close handling remains non-blocking. Active work continues under the
+   * existing workflow lifetime contracts, and the workstation may be closed
+   * after the operation finishes.
+   *
+   * @param event Qt close event.
+   */
+  void closeEvent(QCloseEvent* event) override;
+
 private:
   /**
    * @brief Request viewer loading for a committed non-empty volume path.
@@ -56,6 +72,14 @@ private:
    * @param path Path committed by the cardiac study input widget.
    */
   void loadCommittedVolumePath(const QString& path);
+
+  /**
+   * @brief Externally owned cardiac workflow used for lifecycle state queries.
+   *
+   * The application composition root guarantees that this workflow outlives
+   * the workstation window.
+   */
+  CardiacMriClassificationWorkflow& classificationWorkflow_;
 
   // Qt parent ownership manages both children; these pointers are non-owning.
   viewer::ViewerWorkspaceWidget* viewerWorkspace_ = nullptr;
