@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
     MedicalAIWorkstation
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "C++/Qt workstation for medical image viewing and validated AI inference"
     LANGUAGES CXX
 )
@@ -343,6 +343,7 @@ if(MAIW_ENABLE_QTVIEWERPRO_INTEGRATION)
 
     target_compile_definitions(medical-ai-workstation
         PRIVATE
+            MAIW_APPLICATION_VERSION="${PROJECT_VERSION}"
             MAIW_INSTALL_DATADIR_FROM_BINDIR="${MAIW_INSTALL_DATADIR_FROM_BINDIR}"
     )
 

@@ -67,7 +67,7 @@ int main(int argc, char* argv[])
   QApplication application(argc, argv);
 
   QCoreApplication::setApplicationName(QStringLiteral("Medical AI Workstation"));
-  QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+  QCoreApplication::setApplicationVersion(QStringLiteral(MAIW_APPLICATION_VERSION));
 
   QCommandLineParser parser;
   parser.setApplicationDescription(
